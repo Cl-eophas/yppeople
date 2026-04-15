@@ -105,6 +105,16 @@ exports.contacts = async (req, res) => {
   }
 };
 
+exports.listBranches = async (_req, res) => {
+  try {
+    const branches = await Branch.find({ is_active: true }).sort({ name: 1 }).select("_id name").lean();
+    return res.json({ success: true, data: branches, count: branches.length });
+  } catch (err) {
+    console.error("[listBranches.gs]", err);
+    return res.status(500).json({ success: false, message: "Server error." });
+  }
+};
+
 exports.scheduleMeeting = async (req, res) => {
   try {
     const { title, date, participants } = req.body;

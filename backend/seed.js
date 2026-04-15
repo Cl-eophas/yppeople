@@ -73,6 +73,17 @@ async function seedDatabase({ connect = true, disconnect = true } = {}) {
   });
   summary.admin = { email: admin.email, password: "Admin@1234" };
 
+  const generalSupervisor = await User.create({
+    name: "Grace General Supervisor",
+    email: "gs@wms.co.ke",
+    password: "General@1234",
+    role: "general_supervisor",
+    status: "approved",
+    is_active: true,
+    profileCompleted: true,
+  });
+  summary.general_supervisor = { email: generalSupervisor.email, password: "General@1234" };
+
   const supervisor = await User.create({
     name: "Jane Supervisor",
     email: "supervisor@wms.co.ke",

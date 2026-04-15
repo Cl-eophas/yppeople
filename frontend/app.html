@@ -533,14 +533,6 @@ nav{flex:1;padding:6px 0;}
             <input id="su-email" type="email" autocomplete="email" placeholder=" "/>
             <label>Email</label>
           </div>
-          <div class="form-group" style="margin-bottom:20px;">
-            <label class="form-label">Role</label>
-            <select id="su-role" class="form-input">
-              <option value="">Select role</option>
-              <option value="staff">Staff</option>
-              <option value="supervisor">Supervisor</option>
-            </select>
-          </div>
           <div class="floating-label">
             <input id="su-pass" type="password" autocomplete="new-password" placeholder=" "/>
             <label>Password</label>
@@ -550,7 +542,7 @@ nav{flex:1;padding:6px 0;}
             <label>Confirm password</label>
           </div>
           <button type="button" class="btn-clock-in" id="btn-signup-submit">Request access</button>
-          <p class="signup-hint">New accounts are issued by your organization. This form checks your details and explains next steps.</p>
+          <p class="signup-hint">Self-registration creates a pending staff request. An admin must approve before login.</p>
         </div>
       </div>
     </div>
@@ -910,10 +902,9 @@ function switchAuthTab(tab) {
 function submitSignupIntent() {
   const name = $('su-name').value.trim();
   const email = $('su-email').value.trim();
-  const role = $('su-role').value;
   const p1 = $('su-pass').value;
   const p2 = $('su-pass2').value;
-  if (!name || !email || !role || !p1 || !p2) {
+  if (!name || !email || !p1 || !p2) {
     flash('signup-msg', 'Please complete all fields.');
     return;
   }
@@ -921,7 +912,27 @@ function submitSignupIntent() {
     flash('signup-msg', 'Passwords do not match.');
     return;
   }
-  flash('signup-msg', 'Accounts are created by your administrator. Contact HR with your email to complete onboarding.', 'success');
+  showAuthLoader();
+  fetch(`${API}/auth/signup`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({ fullName: name, email, password: p1 })
+  })
+    .then(async (res) => {
+      let j = {};
+      try { j = await res.json(); } catch (_) {}
+      if (!res.ok) throw new Error(j.message || 'Signup failed');
+      hideAuthLoader();
+      flash('signup-msg', j.message || 'Signup submitted. Await admin approval.', 'success');
+      // Clear fields
+      $('su-pass').value = '';
+      $('su-pass2').value = '';
+    })
+    .catch((e) => {
+      hideAuthLoader();
+      flash('signup-msg', e.message || 'Signup failed');
+    });
 }
 
 function ripple(ev) {
@@ -1015,6 +1026,7 @@ async function initShell() {
 
   if(ME.role==='admin')      buildAdminShell();
   else if(ME.role==='supervisor') buildSupervisorShell();
+  else if(ME.role==='general_supervisor') buildGeneralSupervisorShell();
   else { buildStaffShell(); setTimeout(() => checkStaffContractGate(), 500); }
 
   // GPS for all roles
@@ -1041,6 +1053,14 @@ function connectRealtime() {
         if (typeof loadSvDash === 'function') loadSvDash();
         if (typeof loadSvAtt === 'function') loadSvAtt();
       }
+      if (ME.role === 'general_supervisor') {
+        if (typeof loadGsAttendance === 'function') loadGsAttendance();
+      }
+    });
+    socket.on('attendance:late', (p) => {
+      if (ME?.role !== 'general_supervisor') return;
+      const msg = `Late alert: ${p.staff_name} (${p.phone||'no phone'}) is ${p.minutes_late} min late — ${p.branch_name}`;
+      flash('gs-att-msg', msg, 'warning');
     });
   } catch (_) {}
 }
@@ -1608,6 +1628,260 @@ function buildSupervisorShell() {
   loadSvAtt();
   loadSvStaff();
   startLiveClock();
+}
+
+// ════════════════════════════════════════════════════════════════
+//  GENERAL SUPERVISOR SHELL (organization-wide)
+// ════════════════════════════════════════════════════════════════
+function buildGeneralSupervisorShell() {
+  $('sb-branch').textContent = 'General Supervisor';
+  buildNav([
+    {divider:true,label:'Organization'},
+    {view:'gs-att',   icon:'◷',label:'Global Attendance'},
+    {view:'gs-contacts', icon:'☎',label:'Contacts'},
+    {view:'gs-meetings', icon:'📅',label:'Meetings'},
+    {view:'gs-uniforms', icon:'👕',label:'Uniforms'},
+    {divider:true,label:'My Account'},
+    {view:'s-notifs',  icon:'🔔',label:'Notifications',badge:'notifs'},
+    {view:'s-profile', icon:'👤',label:'Profile'},
+  ]);
+
+  $('main-area').innerHTML = `
+    ${gsAttendanceView()}
+    ${gsContactsView()}
+    ${gsMeetingsView()}
+    ${gsUniformsView()}
+    ${staffNotifsView()}
+    ${staffProfileView()}
+  `;
+
+  const first = document.querySelector('.nav-item[data-view="gs-att"]');
+  showView('gs-att', first || document.querySelector('.nav-item'));
+  loadGsBranches();
+  loadGsAttendance();
+  loadGsMeetings();
+  loadGsUniformHistory();
+  startLiveClock();
+}
+
+function gsAttendanceView() {
+  return `<div id="view-gs-att" class="view">
+    <div class="page-head">
+      <div><div class="page-title">Global Attendance</div><div class="page-sub">Filter by branch/date/status</div></div>
+      <button class="btn btn-ghost" onclick="loadGsAttendance()">↺ Refresh</button>
+    </div>
+    <div class="page-body">
+      <div class="card">
+        <div class="g2" style="align-items:end;">
+          <div class="form-group"><label class="form-label">Date</label><input class="form-input" type="date" id="gs-att-date"/></div>
+          <div class="form-group"><label class="form-label">Branch</label><select class="form-select" id="gs-att-branch"></select></div>
+        </div>
+        <div class="form-group"><label class="form-label">Status</label>
+          <select class="form-select" id="gs-att-status">
+            <option value="">All</option>
+            <option value="late">Late</option>
+            <option value="present">On-time</option>
+          </select>
+        </div>
+        <div id="gs-att-msg"></div>
+        <div id="gs-att-content"><div class="spinner"></div></div>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function loadGsBranches() {
+  try {
+    const res = await api('GET','/general-supervisor/branches');
+    const list = res.data || [];
+    const opts = ['<option value="">All branches</option>'].concat(list.map(b=>`<option value="${b._id}">${b.name}</option>`));
+    if ($('gs-att-branch')) $('gs-att-branch').innerHTML = opts.join('');
+    if ($('gs-contacts-branch')) $('gs-contacts-branch').innerHTML = opts.join('');
+  } catch (e) {}
+}
+
+async function loadGsAttendance() {
+  const d = $('gs-att-date'); if (d && !d.value) d.value = today();
+  const date = $('gs-att-date')?.value || '';
+  const branch = $('gs-att-branch')?.value || '';
+  const status = $('gs-att-status')?.value || '';
+  $('gs-att-content').innerHTML = '<div class="spinner"></div>';
+  try {
+    const qs = new URLSearchParams();
+    if (date) qs.set('date', date);
+    if (branch) qs.set('branch_id', branch);
+    if (status) qs.set('status', status);
+    const res = await api('GET', `/general-supervisor/attendance?${qs.toString()}`);
+    const rows = res.data || [];
+    if (!rows.length) { $('gs-att-content').innerHTML = '<p class="empty">No attendance records.</p>'; return; }
+    $('gs-att-content').innerHTML = `<table class="tbl">
+      <thead><tr><th>Staff</th><th>Branch</th><th>In</th><th>Out</th><th>Status</th><th>Late</th><th>Contact</th></tr></thead>
+      <tbody>${rows.map(r=>`
+        <tr>
+          <td style="font-weight:700;">${escHtml(r.staff?.name||'—')}</td>
+          <td>${escHtml(r.staff?.branch?.name||'—')}</td>
+          <td>${ft(r.clock_in)}</td>
+          <td>${ft(r.clock_out)}</td>
+          <td><span class="badge ${r.status==='late'?'b-late':'b-present'}">${escHtml((r.status||'').replace(/_/g,' '))}</span></td>
+          <td>${r.late_minutes||0} min</td>
+          <td>
+            ${r.staff?.contact?.whatsapp?`<a href="${r.staff.contact.whatsapp}" target="_blank" style="color:var(--accent);">WhatsApp</a>`:'—'}
+            ${r.staff?.contact?.phone?` · <a href="${r.staff.contact.phone}" style="color:var(--accent);">Call</a>`:''}
+          </td>
+        </tr>`).join('')}</tbody></table>`;
+  } catch (e) {
+    $('gs-att-content').innerHTML = `<p style="color:var(--danger);">${escHtml(e.message)}</p>`;
+  }
+}
+
+function gsContactsView() {
+  return `<div id="view-gs-contacts" class="view">
+    <div class="page-head">
+      <div><div class="page-title">Contacts</div><div class="page-sub">WhatsApp and phone links</div></div>
+      <button class="btn btn-ghost" onclick="loadGsContacts()">↺ Refresh</button>
+    </div>
+    <div class="page-body">
+      <div class="card">
+        <div class="g2" style="align-items:end;">
+          <div class="form-group"><label class="form-label">Role</label>
+            <select class="form-select" id="gs-contacts-role">
+              <option value="">All</option>
+              <option value="staff">Staff</option>
+              <option value="supervisor">Supervisors</option>
+            </select>
+          </div>
+          <div class="form-group"><label class="form-label">Branch</label><select class="form-select" id="gs-contacts-branch"></select></div>
+        </div>
+        <div id="gs-contacts-content"><div class="spinner"></div></div>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function loadGsContacts() {
+  $('gs-contacts-content').innerHTML = '<div class="spinner"></div>';
+  try {
+    const qs = new URLSearchParams();
+    const role = $('gs-contacts-role')?.value || '';
+    const branch = $('gs-contacts-branch')?.value || '';
+    if (role) qs.set('role', role);
+    if (branch) qs.set('branch_id', branch);
+    const res = await api('GET', `/general-supervisor/contacts?${qs.toString()}`);
+    const rows = res.data || [];
+    $('gs-contacts-content').innerHTML = rows.length===0 ? '<p class="empty">No contacts.</p>' : `<table class="tbl">
+      <thead><tr><th>Name</th><th>Role</th><th>Branch</th><th>Phone</th><th>Links</th></tr></thead>
+      <tbody>${rows.map(u=>`<tr>
+        <td style="font-weight:700;">${escHtml(u.name)}</td>
+        <td>${escHtml((u.role||'').replace(/_/g,' '))}</td>
+        <td>${escHtml(u.branch||'—')}</td>
+        <td>${escHtml(u.phone||'—')}</td>
+        <td>${u.contact?.whatsapp?`<a href="${u.contact.whatsapp}" target="_blank" style="color:var(--accent);">WhatsApp</a>`:'—'}
+            ${u.contact?.phone?` · <a href="${u.contact.phone}" style="color:var(--accent);">Call</a>`:''}</td>
+      </tr>`).join('')}</tbody></table>`;
+  } catch(e) {
+    $('gs-contacts-content').innerHTML = `<p style="color:var(--danger);">${escHtml(e.message)}</p>`;
+  }
+}
+
+function gsMeetingsView() {
+  return `<div id="view-gs-meetings" class="view">
+    <div class="page-head"><div><div class="page-title">Meetings</div><div class="page-sub">Schedule meetings for supervisors</div></div></div>
+    <div class="page-body">
+      <div class="g2">
+        <div class="card">
+          <div class="card-head">Schedule meeting</div>
+          <div id="gs-meet-msg"></div>
+          <div class="form-group"><label class="form-label">Title</label><input class="form-input" id="gs-meet-title" placeholder="Weekly branch sync"/></div>
+          <div class="form-group"><label class="form-label">Date/Time</label><input class="form-input" type="datetime-local" id="gs-meet-date"/></div>
+          <div class="form-group"><label class="form-label">Supervisor IDs (comma separated)</label><input class="form-input" id="gs-meet-participants" placeholder="paste supervisor Mongo IDs"/></div>
+          <button class="btn btn-role" onclick="gsCreateMeeting()">Create</button>
+          <p style="font-size:11px;color:var(--muted);margin-top:10px;">Participants must be active supervisors.</p>
+        </div>
+        <div class="card">
+          <div class="card-head">Upcoming meetings</div>
+          <div id="gs-meetings-content"><div class="spinner"></div></div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function loadGsMeetings() {
+  try {
+    const res = await api('GET','/general-supervisor/meetings');
+    const rows = res.data || [];
+    $('gs-meetings-content').innerHTML = rows.length===0 ? '<p class="empty">No meetings.</p>' : `<table class="tbl">
+      <thead><tr><th>Title</th><th>When</th><th>Status</th></tr></thead>
+      <tbody>${rows.map(m=>`<tr>
+        <td style="font-weight:700;">${escHtml(m.title)}</td>
+        <td>${fdt(m.scheduled_for)}</td>
+        <td>${escHtml(m.status||'scheduled')}</td>
+      </tr>`).join('')}</tbody></table>`;
+  } catch(e) { $('gs-meetings-content').innerHTML = `<p style="color:var(--danger);">${escHtml(e.message)}</p>`; }
+}
+
+async function gsCreateMeeting() {
+  const title = $('gs-meet-title').value.trim();
+  const date = $('gs-meet-date').value;
+  const ids = $('gs-meet-participants').value.split(',').map(s=>s.trim()).filter(Boolean);
+  if(!title || !date || !ids.length) { flash('gs-meet-msg','Title, date and participants required.'); return; }
+  try {
+    const r = await api('POST','/general-supervisor/meetings',{ title, date, participants: ids });
+    flash('gs-meet-msg', r.message, 'success');
+    $('gs-meet-title').value=''; $('gs-meet-participants').value='';
+    loadGsMeetings();
+  } catch(e){ flash('gs-meet-msg', e.message); }
+}
+
+function gsUniformsView() {
+  return `<div id="view-gs-uniforms" class="view">
+    <div class="page-head"><div><div class="page-title">Uniforms</div><div class="page-sub">Allocate uniforms and view full history</div></div></div>
+    <div class="page-body">
+      <div class="g2">
+        <div class="card">
+          <div class="card-head">Allocate uniform</div>
+          <div id="gs-uniform-msg"></div>
+          <div class="form-group"><label class="form-label">Staff ID (Mongo)</label><input class="form-input" id="gs-u-staff" placeholder="staff user _id"/></div>
+          <div class="form-group"><label class="form-label">Item</label><input class="form-input" id="gs-u-item" placeholder="Reflector jacket"/></div>
+          <div class="form-group"><label class="form-label">Quantity</label><input class="form-input" id="gs-u-qty" type="number" min="1" value="1"/></div>
+          <button class="btn btn-role" onclick="gsAssignUniform()">Assign</button>
+        </div>
+        <div class="card">
+          <div class="card-head">Allocation history</div>
+          <div id="gs-uniforms-content"><div class="spinner"></div></div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function loadGsUniformHistory() {
+  try {
+    const res = await api('GET','/general-supervisor/uniforms/history');
+    const rows = res.data || [];
+    $('gs-uniforms-content').innerHTML = rows.length===0 ? '<p class="empty">No allocations.</p>' : `<table class="tbl">
+      <thead><tr><th>Staff</th><th>Item</th><th>Qty</th><th>Date</th><th>Issued by</th></tr></thead>
+      <tbody>${rows.map(r=>`<tr>
+        <td style="font-weight:700;">${escHtml(r.staff_id?.name||'—')}</td>
+        <td>${escHtml(r.item)}</td>
+        <td>${r.quantity}</td>
+        <td>${fdt(r.issued_date)}</td>
+        <td>${escHtml(r.issued_by?.name||'—')}</td>
+      </tr>`).join('')}</tbody></table>`;
+  } catch(e) { $('gs-uniforms-content').innerHTML = `<p style="color:var(--danger);">${escHtml(e.message)}</p>`; }
+}
+
+async function gsAssignUniform() {
+  const staff_id = $('gs-u-staff').value.trim();
+  const item = $('gs-u-item').value.trim();
+  const quantity = parseInt($('gs-u-qty').value,10)||1;
+  if(!staff_id||!item) { flash('gs-uniform-msg','staff_id and item required.'); return; }
+  try {
+    const r = await api('POST','/general-supervisor/uniforms/assign',{ staff_id, item, quantity });
+    flash('gs-uniform-msg', r.message, 'success');
+    $('gs-u-item').value='';
+    loadGsUniformHistory();
+  } catch(e){ flash('gs-uniform-msg', e.message); }
 }
 
 function svDashView() {

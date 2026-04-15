@@ -27,6 +27,8 @@ router.get(
   gs.contacts
 );
 
+router.get("/branches", guard, gs.listBranches);
+
 router.get("/meetings", guard, gs.listMeetings);
 router.post(
   "/meetings",
