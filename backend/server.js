@@ -9,6 +9,7 @@ const cookieParser = require("cookie-parser");
 const path = require("path");
 const User = require("./models/User");
 const { setSocketIO } = require("./realtime");
+const { configurePassport, passport } = require("./config/passport");
 
 const { apiLimiter } = require("./middleware/rateLimiter");
 const { sanitizeBody } = require("./middleware/sanitize");
@@ -40,6 +41,8 @@ app.use(
 app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
+configurePassport();
+app.use(passport.initialize());
 
 app.use("/api/", apiLimiter);
 app.use(sanitizeBody);
@@ -58,6 +61,7 @@ app.use("/api/pay", require("./routes/pay"));
 app.use("/api/uniform", require("./routes/uniform"));
 app.use("/api/notifications", require("./routes/notifications"));
 app.use("/api/profile", require("./routes/profile"));
+app.use("/api/user", require("./routes/profile"));
 app.use("/api/contracts", require("./routes/contracts"));
 app.use("/api/analytics", require("./routes/analytics"));
 app.use("/api/public", require("./routes/public"));
@@ -125,6 +129,7 @@ mongoose
 
     io.on("connection", (socket) => {
       if (socket.user.role === "admin") socket.join("admins");
+      socket.join(`user:${socket.user._id.toString()}`);
       if (socket.user.branch_id) socket.join(`branch:${socket.user.branch_id.toString()}`);
     });
 

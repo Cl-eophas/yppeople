@@ -1,3 +1,4 @@
+const crypto = require("crypto");
 const mongoose = require("mongoose");
 const User = require("../models/User");
 const StaffProfile = require("../models/StaffProfile");
@@ -13,6 +14,9 @@ const Session = require("../models/Session");
 const Contract = require("../models/Contract");
 const Shift = require("../models/Shift");
 const OffDay = require("../models/OffDay");
+const ForceClockRequest = require("../models/ForceClockRequest");
+const { sendMail } = require("../utils/mailer");
+const { emitUserStatusChanged } = require("../realtime");
 const { validatePassword } = require("../utils/passwordPolicy");
 const { getActiveAlerts, detectRapidActions } = require("../utils/intrusion");
 const { revokeAllSessions } = require("../utils/tokens");
@@ -25,6 +29,24 @@ const EXPORT_DEBOUNCE_MS = 45_000;
 
 const getIP = (req) => req.ip || req.headers["x-forwarded-for"]?.split(",")[0] || "unknown";
 const getUA = (req) => req.headers["user-agent"] || "unknown";
+const KRA_PIN_REGEX = /^[A-Z][0-9]{9}[A-Z]$/;
+const PHONE_REGEX = /^(\+254|0)[0-9]{9}$/;
+
+const hasCompletedProfile = (user) => {
+  if (!user) return false;
+  return Boolean(
+    user.name &&
+      user.email &&
+      /^[0-9]{7,8}$/.test(String(user.idNumber || "")) &&
+      KRA_PIN_REGEX.test(String(user.kraPin || "").toUpperCase()) &&
+      PHONE_REGEX.test(String(user.phone || "")) &&
+      user.nssf &&
+      user.nhif &&
+      user.bank?.bankName &&
+      user.bank?.branch &&
+      String(user.bank?.accountNumber || "").trim().length >= 6
+  );
+};
 
 const writeAudit = async (action, req, targetId, targetType, before, after, metadata = {}) => {
   try {
@@ -129,11 +151,12 @@ exports.resolveSecurityEvent = async (req, res) => {
 // ─── User Management ──────────────────────────────────────────────
 exports.getAllUsers = async (req, res) => {
   try {
-    const { role, branch_id, is_active, search } = req.query;
+    const { role, branch_id, is_active, status, search } = req.query;
     const query = {};
     if (role) query.role = role;
     if (branch_id) query.branch_id = branch_id;
     if (is_active !== undefined) query.is_active = is_active === "true";
+    if (status) query.status = status;
     if (search && String(search).trim()) {
       const term = escapeRegExp(search.trim());
       const profMatch = await StaffProfile.find({ staff_id: { $regex: term, $options: "i" } }).select("user_id").lean();
@@ -162,6 +185,364 @@ exports.getAllUsers = async (req, res) => {
     res.json({ success: true, data: users, count: users.length });
   } catch (err) {
     res.status(500).json({ success: false, message: "Server error." });
+  }
+};
+
+exports.getPendingUsers = async (req, res) => {
+  try {
+    const users = await User.find({ status: "pending" })
+      .populate("branch_id", "name")
+      .sort({ createdAt: -1 })
+      .lean();
+    res.json({ success: true, data: users, count: users.length });
+  } catch (err) {
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+};
+
+exports.approveUser = async (req, res) => {
+  try {
+    const { role } = req.body;
+    if (!["staff", "supervisor", "general_supervisor", "admin"].includes(role)) {
+      return res.status(400).json({ success: false, message: "Invalid role." });
+    }
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ success: false, message: "User not found." });
+
+    const before = { status: user.status, is_active: user.is_active, role: user.role };
+    user.role = role;
+    user.status = "approved";
+    user.is_active = true;
+    await user.save();
+
+    await Notification.create({
+      user_id: user._id,
+      type: "info",
+      message: `Your account has been approved. You can now log in.`,
+    });
+
+    const loginUrl = process.env.PUBLIC_APP_URL || "http://localhost:5000/";
+    await sendMail({
+      to: user.email,
+      subject: "Account approved",
+      html: `<p>Hello ${user.name},</p><p>Your account has been approved. You can now log in here: <a href="${loginUrl}">${loginUrl}</a></p>`,
+      text: `Hello ${user.name},\n\nYour account has been approved. Log in: ${loginUrl}\n`,
+    });
+
+    await writeAudit("APPROVE_USER", req, user._id, "users", before, { status: "approved", role }, { notify: true });
+    emitUserStatusChanged({ user_id: user._id, status: "approved", role: user.role });
+
+    res.json({ success: true, message: "User approved.", data: { id: user._id, status: user.status, role: user.role } });
+  } catch (err) {
+    console.error("[approveUser]", err);
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+};
+
+exports.rejectUser = async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ success: false, message: "User not found." });
+
+    const before = { status: user.status, is_active: user.is_active };
+    user.status = "rejected";
+    user.is_active = false;
+    await user.save();
+
+    await Notification.create({
+      user_id: user._id,
+      type: "warning",
+      message: `Your account registration was rejected. Contact HR/admin for support.`,
+    });
+
+    const loginUrl = process.env.PUBLIC_APP_URL || "http://localhost:5000/";
+    await sendMail({
+      to: user.email,
+      subject: "Account rejected",
+      html: `<p>Hello ${user.name},</p><p>Your account registration was rejected. If you believe this is an error, contact HR/admin.</p>`,
+      text: `Hello ${user.name},\n\nYour account registration was rejected. Contact HR/admin.\n`,
+    });
+
+    await writeAudit("REJECT_USER", req, user._id, "users", before, { status: "rejected" }, { notify: true });
+    emitUserStatusChanged({ user_id: user._id, status: "rejected" });
+
+    res.json({ success: true, message: "User rejected." });
+  } catch (err) {
+    console.error("[rejectUser]", err);
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+};
+
+exports.verifyUserProfile = async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ success: false, message: "User not found." });
+
+    if (!user.profileCompleted || !hasCompletedProfile(user)) {
+      return res.status(400).json({
+        success: false,
+        message: "Cannot verify user. Profile must be fully completed with valid bank details.",
+      });
+    }
+
+    const before = { isVerified: user.isVerified, bankVerified: user.bank?.isVerified };
+    user.isVerified = true;
+    user.bank = { ...(user.bank || {}), isVerified: true, isActive: true };
+    await user.save();
+
+    await Notification.create({
+      user_id: user._id,
+      type: "info",
+      message: "Your profile has been verified by admin.",
+    });
+
+    await sendMail({
+      to: user.email,
+      subject: "Profile verified",
+      html: `<p>Hello ${user.name},</p><p>Your profile and payment details have been verified successfully.</p>`,
+      text: `Hello ${user.name},\n\nYour profile and payment details have been verified successfully.\n`,
+    });
+
+    await writeAudit("VERIFY_USER_PROFILE", req, user._id, "users", before, { isVerified: true });
+
+    return res.json({
+      success: true,
+      message: "User verified successfully.",
+      data: { id: user._id, isVerified: user.isVerified },
+    });
+  } catch (err) {
+    console.error("[verifyUserProfile]", err);
+    return res.status(500).json({ success: false, message: "Server error." });
+  }
+};
+
+exports.createUserByAdmin = async (req, res) => {
+  try {
+    const { fullName, email, role, branch_id } = req.body;
+    const cleanEmail = String(email || "").toLowerCase().trim();
+    const cleanName = String(fullName || "").trim();
+
+    if (!["admin", "general_supervisor", "supervisor", "staff"].includes(role)) {
+      return res.status(400).json({ success: false, message: "Invalid role." });
+    }
+
+    const exists = await User.findOne({ email: cleanEmail });
+    if (exists) return res.status(400).json({ success: false, message: "Email already in use." });
+
+    const generatedPassword = crypto.randomBytes(8).toString("base64url");
+    const staffId = await require("../utils/staffIdV2").nextYPStaffIdV2();
+
+    const user = await User.create({
+      staffId,
+      name: cleanName,
+      email: cleanEmail,
+      password: generatedPassword,
+      role,
+      branch_id: branch_id || undefined,
+      status: "approved",
+      is_active: true,
+      isVerified: false,
+      profileCompleted: false,
+      force_password_reset: true,
+    });
+
+    await Notification.create({
+      user_id: user._id,
+      type: "info",
+      message: "Your account has been created by admin. Please update your password after login.",
+    });
+
+    const appUrl = process.env.PUBLIC_APP_URL || "http://localhost:5000/";
+    await sendMail({
+      to: user.email,
+      subject: "Your WMS account credentials",
+      html: `<p>Hello ${user.name},</p><p>Your account has been created.</p><p>Email: ${user.email}<br/>Temporary password: <strong>${generatedPassword}</strong><br/>Staff ID: ${user.staffId}</p><p>Login: <a href="${appUrl}">${appUrl}</a></p>`,
+      text: `Hello ${user.name},\n\nYour account has been created.\nEmail: ${user.email}\nTemporary password: ${generatedPassword}\nStaff ID: ${user.staffId}\nLogin: ${appUrl}\n`,
+    });
+
+    await writeAudit(
+      "ADMIN_CREATE_USER",
+      req,
+      user._id,
+      "users",
+      null,
+      { name: user.name, email: user.email, role: user.role, status: user.status, staffId: user.staffId }
+    );
+
+    return res.status(201).json({
+      success: true,
+      message: "User account created successfully.",
+      data: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        staffId: user.staffId,
+      },
+    });
+  } catch (err) {
+    console.error("[createUserByAdmin]", err);
+    return res.status(500).json({ success: false, message: "Server error." });
+  }
+};
+
+exports.getForcedClockRequests = async (req, res) => {
+  try {
+    const { status = "pending" } = req.query;
+    const query = {};
+    if (["pending", "approved", "rejected"].includes(String(status))) {
+      query.status = status;
+    }
+
+    const rows = await ForceClockRequest.find(query)
+      .sort({ createdAt: -1 })
+      .populate("user_id", "name email phone staffId branch_id")
+      .populate("reviewed_by", "name email")
+      .lean();
+
+    return res.json({ success: true, data: rows, count: rows.length });
+  } catch (err) {
+    console.error("[getForcedClockRequests]", err);
+    return res.status(500).json({ success: false, message: "Server error." });
+  }
+};
+
+exports.approveForcedClockRequest = async (req, res) => {
+  try {
+    const request = await ForceClockRequest.findById(req.params.id).populate("user_id", "name branch_id");
+    if (!request) return res.status(404).json({ success: false, message: "Request not found." });
+    if (request.status !== "pending") {
+      return res.status(400).json({ success: false, message: "Request has already been reviewed." });
+    }
+
+    const now = new Date();
+    const attendance = await Attendance.findOneAndUpdate(
+      { staff_id: request.user_id._id, date: request.date },
+      {
+        $set: {
+          clock_in: now,
+          status: "forced",
+          is_forced: true,
+          notes: `Forced clock-in approved by admin. Reason: ${request.reason}`,
+        },
+        $setOnInsert: {
+          staff_id: request.user_id._id,
+          date: request.date,
+        },
+      },
+      { upsert: true, new: true }
+    );
+
+    request.status = "approved";
+    request.reviewed_by = req.user._id;
+    request.reviewed_at = now;
+    request.review_note = String(req.body.note || "").trim() || "Approved by admin";
+    await request.save();
+
+    await Notification.create({
+      user_id: request.user_id._id,
+      type: "attendance",
+      message: "Your forced clock-in request has been approved by admin.",
+    });
+
+    await writeAudit(
+      "APPROVE_FORCED_CLOCKIN",
+      req,
+      request._id,
+      "attendance",
+      { status: "pending" },
+      { status: "approved", attendance_id: attendance._id }
+    );
+
+    if (request.user_id?.branch_id) {
+      emitAttendanceChanged({ branch_id: request.user_id.branch_id, date: request.date });
+    }
+
+    return res.json({ success: true, message: "Forced clock-in request approved.", data: request });
+  } catch (err) {
+    console.error("[approveForcedClockRequest]", err);
+    return res.status(500).json({ success: false, message: "Server error." });
+  }
+};
+
+exports.rejectForcedClockRequest = async (req, res) => {
+  try {
+    const request = await ForceClockRequest.findById(req.params.id);
+    if (!request) return res.status(404).json({ success: false, message: "Request not found." });
+    if (request.status !== "pending") {
+      return res.status(400).json({ success: false, message: "Request has already been reviewed." });
+    }
+
+    const note = String(req.body.note || "").trim();
+    if (!note) {
+      return res.status(400).json({ success: false, message: "Rejection note is required." });
+    }
+
+    request.status = "rejected";
+    request.reviewed_by = req.user._id;
+    request.reviewed_at = new Date();
+    request.review_note = note;
+    await request.save();
+
+    await Notification.create({
+      user_id: request.user_id,
+      type: "warning",
+      message: `Your forced clock-in request was rejected. Reason: ${note}`,
+    });
+
+    await writeAudit(
+      "REJECT_FORCED_CLOCKIN",
+      req,
+      request._id,
+      "attendance",
+      { status: "pending" },
+      { status: "rejected", review_note: note }
+    );
+
+    return res.json({ success: true, message: "Forced clock-in request rejected.", data: request });
+  } catch (err) {
+    console.error("[rejectForcedClockRequest]", err);
+    return res.status(500).json({ success: false, message: "Server error." });
+  }
+};
+
+exports.exportUsersXlsx = async (req, res) => {
+  try {
+    const XLSX = require("xlsx");
+    const users = await User.find({})
+      .populate("branch_id", "name")
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const rows = users.map((u) => ({
+      "Staff ID": u.staffId || "",
+      "Full Name": u.name || "",
+      Email: u.email || "",
+      Phone: u.phone || "",
+      "ID Number": u.idNumber || "",
+      "KRA PIN": u.kraPin || "",
+      NSSF: u.nssf || "",
+      NHIF: u.nhif || "",
+      "Bank Name": u.bank?.bankName || "",
+      "Account Number": u.bank?.accountNumber || "",
+      Branch: u.bank?.branch || "",
+      "Bank Verified": u.bank?.isVerified ? "Yes" : "No",
+      Status: u.status || "",
+      Role: u.role || "",
+      "System Branch": u.branch_id?.name || "",
+    }));
+
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Users");
+    const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", 'attachment; filename="users.xlsx"');
+    return res.send(buf);
+  } catch (err) {
+    console.error("[exportUsersXlsx]", err);
+    return res.status(500).json({ success: false, message: "Server error." });
   }
 };
 

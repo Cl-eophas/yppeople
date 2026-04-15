@@ -17,6 +17,7 @@ const attendanceSchema = new mongoose.Schema(
       default: "present",
     },
     shift_start: Date,
+    late_minutes: { type: Number, default: 0 },
     notes: String,
   },
   { timestamps: true }

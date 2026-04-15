@@ -3,12 +3,38 @@ const bcrypt = require("bcryptjs");
 
 const userSchema = new mongoose.Schema(
   {
-    name: { type: String, required: true, trim: true, maxlength: 100 },
+    // Identity
+    staffId: { type: String, unique: true, sparse: true, trim: true }, // e.g. "YP/0001"
+    name: { type: String, required: true, trim: true, maxlength: 100 }, // kept for compatibility (full name)
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
-    password: { type: String, required: true },
-    role: { type: String, enum: ["admin", "supervisor", "staff"], default: "staff" },
+    password: { type: String, required: false },
+    googleId: { type: String, default: null, index: true },
+
+    // HR / payroll (required for onboarding completion)
+    phone: { type: String, trim: true },
+    idNumber: { type: String, trim: true },
+    kraPin: { type: String, trim: true },
+    nssf: { type: String, trim: true },
+    nhif: { type: String, trim: true },
+    bank: {
+      accountNumber: { type: String, trim: true },
+      bankName: { type: String, trim: true },
+      branch: { type: String, trim: true },
+      isVerified: { type: Boolean, default: false },
+      isActive: { type: Boolean, default: false },
+    },
+
+    // System / onboarding
+    role: {
+      type: String,
+      enum: ["admin", "general_supervisor", "supervisor", "staff"],
+      default: "staff",
+    },
+    status: { type: String, enum: ["pending", "approved", "rejected"], default: "pending" },
+    isVerified: { type: Boolean, default: false },
+    profileCompleted: { type: Boolean, default: false },
     branch_id: { type: mongoose.Schema.Types.ObjectId, ref: "Branch" },
-    is_active: { type: Boolean, default: true },
+    is_active: { type: Boolean, default: false }, // false until approved
     failed_login_attempts: { type: Number, default: 0 },
     lockout_until: { type: Date, default: null },
     password_changed_at: { type: Date },
@@ -35,15 +61,19 @@ const userSchema = new mongoose.Schema(
 
 userSchema.index({ branch_id: 1, role: 1 });
 userSchema.index({ is_active: 1, role: 1 });
+userSchema.index({ staffId: 1 });
+userSchema.index({ status: 1, role: 1, is_active: 1 });
 
 userSchema.pre("save", async function (next) {
   if (!this.isModified("password")) return next();
+  if (!this.password) return next();
   this.password = await bcrypt.hash(this.password, 12);
   this.password_changed_at = new Date();
   next();
 });
 
 userSchema.methods.comparePassword = async function (candidate) {
+  if (!this.password) return false;
   return bcrypt.compare(candidate, this.password);
 };
 

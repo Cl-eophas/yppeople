@@ -7,6 +7,9 @@ const { contractStaffMayWork } = require("../utils/contractCheck");
 const { emitAttendanceChanged } = require("../realtime");
 const { shiftStartDateTime } = require("../utils/shiftTime");
 const shiftService = require("../services/shiftService");
+const Notification = require("../models/Notification");
+const SecurityEvent = require("../models/SecurityEvent");
+const ForceClockRequest = require("../models/ForceClockRequest");
 
 exports.clockIn = async (req, res) => {
   try {
@@ -53,6 +56,7 @@ exports.clockIn = async (req, res) => {
 
     let shiftStart;
     let status;
+    let lateMinutes = 0;
 
     if (scheduled) {
       shiftStart = shiftStartDateTime(scheduled.shift_date, scheduled.start_time);
@@ -67,7 +71,8 @@ exports.clockIn = async (req, res) => {
           message: `Clock-in is only allowed from ${scheduled.start_time} until ${Math.max(10, windowMin)} minute(s) after shift start.`,
         });
       }
-      status = now > shiftStart ? "late" : "present";
+      lateMinutes = Math.max(0, Math.floor((now.getTime() - shiftStart.getTime()) / 60000));
+      status = lateMinutes > 0 ? "late" : "present";
     } else if (allowUnscheduled) {
       shiftStart = new Date(now);
       const dst = String(branch.default_shift_start_time || "08:00");
@@ -86,12 +91,48 @@ exports.clockIn = async (req, res) => {
 
     const attendance = existing
       ? await Attendance.findByIdAndUpdate(existing._id,
-          { clock_in: now, location_in: locIn, shift_start: shiftStart, status, is_supervisor_entry: false },
+          {
+            clock_in: now,
+            location_in: locIn,
+            shift_start: shiftStart,
+            status,
+            late_minutes: lateMinutes,
+            is_supervisor_entry: false,
+          },
           { new: true })
       : await Attendance.create({
           staff_id: staffId, date: today, clock_in: now,
-          location_in: locIn, shift_start: shiftStart, status, is_supervisor_entry: false,
+          location_in: locIn, shift_start: shiftStart, status, late_minutes: lateMinutes, is_supervisor_entry: false,
         });
+
+    if (status === "late") {
+      const escalatedUsers = await User.find({
+        role: { $in: ["general_supervisor", "admin"] },
+        is_active: true,
+      }).select("_id");
+
+      if (escalatedUsers.length) {
+        await Notification.insertMany(
+          escalatedUsers.map((u) => ({
+            user_id: u._id,
+            type: "attendance",
+            message: `Late alert: ${user.name} (${user.phone || "no phone"}) is ${lateMinutes} minute(s) late.`,
+          }))
+        );
+      }
+
+      await SecurityEvent.create({
+        type: "anomalous_action",
+        user_id: user._id,
+        metadata: {
+          category: "late_escalation",
+          name: user.name,
+          phone: user.phone || null,
+          minutes_late: lateMinutes,
+          date: today,
+        },
+      });
+    }
 
     emitAttendanceChanged({ branch_id: user.branch_id._id || user.branch_id, date: today });
 
@@ -190,5 +231,65 @@ exports.getHistory = async (req, res) => {
   } catch (err) {
     console.error("[getHistory]", err);
     res.status(500).json({ success: false, message: "Server error." });
+  }
+};
+
+exports.requestForcedClockIn = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id).select("name branch_id");
+    if (!user) return res.status(404).json({ success: false, message: "User not found." });
+
+    const today = getTodayString();
+    const { reason } = req.body;
+    const reasonText = String(reason || "").trim();
+    if (!reasonText) {
+      return res.status(400).json({ success: false, message: "Reason is required." });
+    }
+
+    const att = await Attendance.findOne({ staff_id: user._id, date: today });
+    if (att?.clock_in) {
+      return res.status(400).json({ success: false, message: "You are already clocked in for today." });
+    }
+
+    const existingPending = await ForceClockRequest.findOne({
+      user_id: user._id,
+      date: today,
+      status: "pending",
+    });
+    if (existingPending) {
+      return res.status(400).json({ success: false, message: "A forced clock-in request is already pending." });
+    }
+
+    const request = await ForceClockRequest.create({
+      user_id: user._id,
+      branch_id: user.branch_id || null,
+      date: today,
+      reason: reasonText,
+      status: "pending",
+    });
+
+    const recipients = await User.find({
+      role: "admin",
+      is_active: true,
+    }).select("_id");
+
+    if (recipients.length) {
+      await Notification.insertMany(
+        recipients.map((r) => ({
+          user_id: r._id,
+          type: "attendance",
+          message: `Forced clock-in request from ${user.name} for ${today}.`,
+        }))
+      );
+    }
+
+    return res.status(201).json({
+      success: true,
+      message: "Forced clock-in request submitted and pending admin approval.",
+      data: request,
+    });
+  } catch (err) {
+    console.error("[requestForcedClockIn]", err);
+    return res.status(500).json({ success: false, message: "Server error." });
   }
 };

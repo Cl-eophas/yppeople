@@ -188,6 +188,11 @@ Staff (base layer)
 | PATCH | /api/supervisor/leave/:id/approve | Approve leave |
 | PATCH | /api/supervisor/leave/:id/reject | Reject + refund |
 | POST | /api/supervisor/notify | Send/broadcast message |
+| GET | /api/supervisor/contacts | Staff contact links (WhatsApp/tel) |
+| GET | /api/supervisor/meetings | List scheduled meetings |
+| POST | /api/supervisor/meetings | Schedule a meeting |
+| POST | /api/supervisor/uniforms/assign | Assign uniform to staff |
+| GET | /api/supervisor/uniforms/history | Full uniform issue history |
 
 ### Admin (role: admin)
 | Method | Endpoint | Description |
@@ -215,3 +220,25 @@ Staff (base layer)
 | PATCH | /api/admin/uniforms/:id/return | Record return |
 | POST | /api/admin/notify | Broadcast notification |
 | GET | /api/admin/audit | Audit log |
+| GET | /api/admin/attendance/forced-clock-requests | Force clock-in requests |
+| PUT | /api/admin/attendance/forced-clock-requests/:id/approve | Approve forced clock-in |
+| PUT | /api/admin/attendance/forced-clock-requests/:id/reject | Reject forced clock-in |
+| PUT | /api/admin/users/:id/verify | Verify completed user profile |
+| POST | /api/admin/create-user | Admin account creation (all roles) |
+
+---
+
+## Deployment (Render + Atlas + Vercel)
+
+1. Create MongoDB Atlas cluster and copy connection URI into `MONGODB_URI`.
+2. Copy `.env.example` to `.env` and fill all required secrets.
+3. Render (backend):
+   - Build command: `npm install`
+   - Start command: `npm start`
+   - Add all backend env vars from `.env.example`
+4. Vercel (frontend):
+   - Deploy static frontend using `frontend/` as output
+   - Set API base to Render backend URL
+5. Set `PUBLIC_APP_URL` to your production app URL.
+6. If using Google OAuth, set callback URL to:
+   - `https://<your-backend-domain>/api/auth/google/callback`

@@ -30,5 +30,13 @@ router.post(
 );
 
 router.get("/history", authenticate, staffOrSupervisor, att.getHistory);
+router.post(
+  "/force-clock-in/request",
+  authenticate,
+  staffOrSupervisor,
+  [body("reason").trim().isLength({ min: 5, max: 500 })],
+  validate,
+  att.requestForcedClockIn
+);
 
 module.exports = router;

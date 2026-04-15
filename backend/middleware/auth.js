@@ -44,6 +44,40 @@ const authenticate = async (req, res, next) => {
   }
 };
 
+/** Authenticate even if pending/inactive (for onboarding flows only). */
+const authenticateAnyStatus = async (req, res, next) => {
+  try {
+    const header = req.headers.authorization;
+    if (!header || !header.startsWith("Bearer "))
+      return res.status(401).json({ success: false, message: "No access token provided." });
+
+    const token = header.slice(7);
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch (e) {
+      if (e.name === "TokenExpiredError")
+        return res.status(401).json({
+          success: false,
+          message: "Access token expired. Refresh required.",
+          code: "TOKEN_EXPIRED",
+        });
+      return res.status(401).json({ success: false, message: "Invalid token." });
+    }
+
+    const user = await User.findById(decoded.id).select("-password -refresh_token_hash -totp_secret");
+    if (!user) return res.status(401).json({ success: false, message: "User not found." });
+    if (user.isLocked()) return res.status(429).json({ success: false, message: "Account is locked." });
+
+    req.user = user;
+    req.token_jti = decoded.jti;
+    next();
+  } catch (err) {
+    console.error("[authenticateAnyStatus]", err);
+    return res.status(500).json({ success: false, message: "Server error." });
+  }
+};
+
 const requireRole =
   (...roles) =>
   async (req, res, next) => {
@@ -74,4 +108,4 @@ const staffOrSupervisor = (req, res, next) => {
   next();
 };
 
-module.exports = { authenticate, requireRole, staffOnly, staffOrSupervisor };
+module.exports = { authenticate, authenticateAnyStatus, requireRole, staffOnly, staffOrSupervisor };

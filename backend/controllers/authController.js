@@ -11,6 +11,7 @@ const { validatePassword } = require("../utils/passwordPolicy");
 const { isNewDevice, recordEvent } = require("../utils/intrusion");
 const { calcAnnualLeaveAccrual } = require("../utils/dateHelpers");
 const { nextYPStaffId } = require("../utils/staffId");
+const { nextYPStaffIdV2 } = require("../utils/staffIdV2");
 
 const getIP = (req) => req.ip || req.headers["x-forwarded-for"]?.split(",")[0] || "unknown";
 const getUA = (req) => req.headers["user-agent"] || "unknown";
@@ -19,18 +20,22 @@ const getUA = (req) => req.headers["user-agent"] || "unknown";
 exports.login = async (req, res) => {
   const ip = getIP(req);
   const ua = getUA(req);
-  const { email, password } = req.body;
+  const identifier = (req.body.identifier || req.body.email || "").toString();
+  const { password } = req.body;
 
-  if (!email || !password)
-    return res.status(400).json({ success: false, message: "Email and password required." });
+  if (!identifier || !password)
+    return res.status(400).json({ success: false, message: "identifier (email or staffId) and password required." });
 
   try {
-    const user = await User.findOne({ email: email.toLowerCase().trim() }).select("+refresh_token_hash");
+    const identTrim = identifier.trim();
+    const isEmail = /@/.test(identTrim);
+    const query = isEmail ? { email: identTrim.toLowerCase() } : { staffId: identTrim.toUpperCase() };
+    const user = await User.findOne(query).select("+refresh_token_hash");
 
     // Always take the same time path to prevent user enumeration
     if (!user) {
       await new Promise(r => setTimeout(r, 300)); // constant-time delay
-      await recordEvent("failed_login", { email, ip_address: ip, user_agent: ua });
+      await recordEvent("failed_login", { email: identTrim, ip_address: ip, user_agent: ua });
       return res.status(401).json({ success: false, message: "Invalid credentials." });
     }
 
@@ -48,7 +53,7 @@ exports.login = async (req, res) => {
       await user.recordFailedLogin();
       if (user.failed_login_attempts >= 5) {
         await recordEvent("account_lockout", {
-          user_id: user._id, email, ip_address: ip, user_agent: ua,
+          user_id: user._id, email: user.email, ip_address: ip, user_agent: ua,
           metadata: { attempts: user.failed_login_attempts },
         });
         return res.status(429).json({
@@ -56,15 +61,21 @@ exports.login = async (req, res) => {
           message: "Too many failed attempts. Account locked for 15 minutes.",
         });
       }
-      await recordEvent("failed_login", { user_id: user._id, email, ip_address: ip, user_agent: ua });
+      await recordEvent("failed_login", { user_id: user._id, email: user.email, ip_address: ip, user_agent: ua });
       return res.status(401).json({
         success: false,
         message: `Invalid credentials. ${5 - user.failed_login_attempts} attempt(s) remaining.`,
       });
     }
 
-    if (!user.is_active)
-      return res.status(401).json({ success: false, message: "Account deactivated. Contact admin." });
+    if (user.status !== "approved" || !user.is_active) {
+      return res.status(403).json({
+        success: false,
+        message: user.status === "pending" ? "Account pending approval." : "Account not approved.",
+        code: "NOT_APPROVED",
+        status: user.status,
+      });
+    }
 
     // Reset failed attempts on success
     await user.resetLoginAttempts();
@@ -118,10 +129,98 @@ exports.login = async (req, res) => {
         role: user.role,
         branch_id: user.branch_id,
         new_device_warning: newDevice && user.role === "admin",
+        profile_warning: user.profileCompleted ? null : "Complete your profile to enable payments",
       },
     });
   } catch (err) {
     console.error("[login]", err);
+    return res.status(500).json({ success: false, message: "Server error." });
+  }
+};
+
+// ─── POST /api/auth/signup  (public onboarding) ───────────────────────────────
+exports.signup = async (req, res) => {
+  try {
+    const {
+      fullName,
+      email,
+      password,
+    } = req.body;
+
+    if (!fullName || !email || !password)
+      return res.status(400).json({ success: false, message: "fullName, email, and password required." });
+
+    const { valid, errors } = validatePassword(password);
+    if (!valid) return res.status(400).json({ success: false, message: "Password policy failed.", errors });
+
+    const exists = await User.findOne({ email: email.toLowerCase().trim() });
+    if (exists) return res.status(400).json({ success: false, message: "Email already in use." });
+
+    const staffId = await nextYPStaffIdV2();
+
+    const user = await User.create({
+      staffId,
+      name: String(fullName).trim(),
+      email: email.toLowerCase().trim(),
+      password,
+      // Ignore any client-provided role to prevent privilege escalation.
+      role: "staff",
+      status: "pending",
+      is_active: false,
+      isVerified: false,
+      profileCompleted: false,
+    });
+
+    return res.status(201).json({
+      success: true,
+      message: "Registration received. Your account is pending approval.",
+      staffId: user.staffId,
+    });
+  } catch (err) {
+    console.error("[signup]", err);
+    return res.status(500).json({ success: false, message: "Server error." });
+  }
+};
+
+// ─── POST /api/auth/complete-profile (for google/pending users) ───────────────
+exports.completeProfile = async (req, res) => {
+  try {
+    const { phone, idNumber, kraPin, nssf, nhif, bankName, bankBranch, accountNumber } = req.body;
+    const user = await User.findById(req.user._id);
+    if (!user) return res.status(404).json({ success: false, message: "User not found." });
+
+    const idOk = /^[0-9]{7,8}$/.test(String(idNumber || ""));
+    const kraOk = /^[A-Z][0-9]{9}[A-Z]$/.test(String(kraPin || "").toUpperCase());
+    const phoneOk = /^(\+254|0)[0-9]{9}$/.test(String(phone || ""));
+    const acctOk = String(accountNumber || "").trim().length >= 6;
+    if (!idOk || !kraOk || !phoneOk || !acctOk) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid profile fields. Ensure ID, KRA PIN, phone, and bank account are valid.",
+      });
+    }
+
+    Object.assign(user, { phone, idNumber, kraPin, nssf, nhif });
+    user.bank = {
+      ...(user.bank || {}),
+      bankName,
+      branch: bankBranch,
+      accountNumber,
+      isVerified: false,
+      isActive: false,
+    };
+    if (!user.staffId) user.staffId = await nextYPStaffIdV2();
+    user.status = "pending";
+    user.is_active = false;
+    user.role = "staff";
+    user.profileCompleted = true;
+    user.isVerified = false;
+
+    await user.save();
+
+    return res.json({ success: true, message: "Profile completed. Awaiting admin approval.", staffId: user.staffId });
+  } catch (err) {
+    console.error("[completeProfile]", err);
     return res.status(500).json({ success: false, message: "Server error." });
   }
 };
@@ -202,7 +301,22 @@ exports.register = async (req, res) => {
       return res.status(400).json({ success: false, message: "Email already in use." });
 
     const assignedRole = role || "staff";
-    const user = await User.create({ name, email, password, role: assignedRole, branch_id });
+    if (!["admin", "general_supervisor", "supervisor", "staff"].includes(assignedRole)) {
+      return res.status(400).json({ success: false, message: "Invalid role." });
+    }
+    const user = await User.create({
+      name,
+      email,
+      password,
+      role: assignedRole,
+      branch_id,
+      status: "approved",
+      is_active: true,
+      isVerified: false,
+      profileCompleted: false,
+    });
+    if (!user.staffId) user.staffId = await nextYPStaffIdV2();
+    await user.save({ validateModifiedOnly: true });
 
     if (["staff", "supervisor"].includes(assignedRole)) {
       const jd = join_date ? new Date(join_date) : new Date();
@@ -291,6 +405,38 @@ exports.getSessions = async (req, res) => {
     }).sort({ login_at: -1 });
     return res.json({ success: true, data: sessions });
   } catch (err) {
+    return res.status(500).json({ success: false, message: "Server error." });
+  }
+};
+
+// ─── GET /api/auth/google/callback ────────────────────────────────────────────
+exports.googleOAuthSuccess = async (req, res) => {
+  try {
+    const user = req.user;
+    if (!user) return res.status(401).json({ success: false, message: "Google authentication failed." });
+
+    const { token: accessToken } = signAccess(user._id, user.role);
+    const { raw: refreshToken, expiresAt } = await issueRefreshToken(user._id, getIP(req), getUA(req));
+    setRefreshCookie(res, refreshToken, expiresAt);
+
+    return res.json({
+      success: true,
+      message: user.status === "approved" ? "Google login successful." : "Google account linked. Await admin approval.",
+      access_token: accessToken,
+      token_type: "Bearer",
+      expires_in: 900,
+      data: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        status: user.status,
+        isVerified: user.isVerified,
+        profileCompleted: user.profileCompleted,
+      },
+    });
+  } catch (err) {
+    console.error("[googleOAuthSuccess]", err);
     return res.status(500).json({ success: false, message: "Server error." });
   }
 };

@@ -21,8 +21,32 @@ router.patch(
 );
 
 router.get("/users", guard, admin.getAllUsers);
+router.get("/users/pending", guard, admin.getPendingUsers);
 router.get("/users/:id", guard, [param("id").isMongoId()], validate, admin.getUserById);
 router.patch("/users/:id", guard, [param("id").isMongoId()], validate, admin.updateUser);
+router.put(
+  "/users/:id/approve",
+  guard,
+  [param("id").isMongoId(), body("role").isIn(["admin", "general_supervisor", "supervisor", "staff"])],
+  validate,
+  admin.approveUser
+);
+router.put("/users/:id/reject", guard, [param("id").isMongoId()], validate, admin.rejectUser);
+router.put("/users/:id/verify", guard, [param("id").isMongoId()], validate, admin.verifyUserProfile);
+router.post(
+  "/create-user",
+  guard,
+  [
+    body("fullName").trim().isLength({ min: 2, max: 120 }),
+    body("email").isEmail().normalizeEmail(),
+    body("role").isIn(["admin", "general_supervisor", "supervisor", "staff"]),
+    body("branch_id").optional().isMongoId(),
+  ],
+  validate,
+  admin.createUserByAdmin
+);
+router.get("/export/users", guard, exportLimiter, admin.exportUsersXlsx);
+router.get("/export-users", guard, exportLimiter, admin.exportUsersXlsx);
 router.patch(
   "/users/:id/staff-profile",
   guard,
@@ -99,6 +123,21 @@ router.post(
 );
 
 router.get("/attendance", guard, admin.getAllAttendance);
+router.get("/attendance/forced-clock-requests", guard, admin.getForcedClockRequests);
+router.put(
+  "/attendance/forced-clock-requests/:id/approve",
+  guard,
+  [param("id").isMongoId(), body("note").optional().trim().isLength({ max: 500 })],
+  validate,
+  admin.approveForcedClockRequest
+);
+router.put(
+  "/attendance/forced-clock-requests/:id/reject",
+  guard,
+  [param("id").isMongoId(), body("note").trim().isLength({ min: 2, max: 500 })],
+  validate,
+  admin.rejectForcedClockRequest
+);
 router.get(
   "/attendance/export",
   guard,

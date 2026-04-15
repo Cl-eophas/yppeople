@@ -17,3 +17,13 @@ exports.emitAttendanceChanged = (payload) => {
     console.error("[emitAttendanceChanged]", e.message);
   }
 };
+
+exports.emitUserStatusChanged = (payload) => {
+  if (!io) return;
+  try {
+    if (payload?.user_id) io.to(`user:${payload.user_id.toString()}`).emit("user:status", payload);
+    io.to("admins").emit("user:status", payload);
+  } catch (e) {
+    console.error("[emitUserStatusChanged]", e.message);
+  }
+};
