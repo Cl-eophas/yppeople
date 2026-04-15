@@ -23,9 +23,12 @@ const { calcAnnualLeaveAccrual } = require("./utils/dateHelpers");
 const { nextYPStaffId } = require("./utils/staffId");
 const { addShiftHours } = require("./utils/shiftTime");
 
-async function seed() {
-  await mongoose.connect(process.env.MONGODB_URI || "mongodb://localhost:27017/wms_db");
-  console.log("✅  Connected to MongoDB\n");
+async function seedDatabase({ connect = true, disconnect = true } = {}) {
+  if (connect) {
+    await mongoose.connect(process.env.MONGODB_URI || "mongodb://localhost:27017/wms_db");
+  } else if (mongoose.connection.readyState !== 1) {
+    throw new Error("MongoDB not connected. Start server or call seed with connect=true.");
+  }
 
   await Promise.all([
     User.deleteMany({}),
@@ -43,7 +46,8 @@ async function seed() {
     OffDay.deleteMany({}),
     AttendanceReport.deleteMany({}),
   ]);
-  console.log("🧹  Cleared existing data\n");
+
+  const summary = { cleared: true };
 
   const branch = await Branch.create({
     name: "Nairobi CBD Branch",
@@ -51,8 +55,10 @@ async function seed() {
     latitude: -1.2921,
     longitude: 36.8219,
     radius_meters: 1000,
+    default_shift_start_time: "08:00",
+    clock_in_window_minutes: 60,
   });
-  console.log(`🏢  Branch: ${branch.name}`);
+  summary.branch = { id: branch._id.toString(), name: branch.name };
 
   const admin = await User.create({
     name: "System Admin",
@@ -62,7 +68,7 @@ async function seed() {
     branch_id: branch._id,
     is_active: true,
   });
-  console.log(`👑  Admin: ${admin.email}  /  Admin@1234`);
+  summary.admin = { email: admin.email, password: "Admin@1234" };
 
   const supervisor = await User.create({
     name: "Jane Supervisor",
@@ -81,7 +87,7 @@ async function seed() {
     join_date: supJoin,
     pay_rate: 3000,
   });
-  console.log(`🔷  Supervisor: ${supervisor.email}  (${supStaffId})  /  Supervisor@1234`);
+  summary.supervisor = { email: supervisor.email, password: "Supervisor@1234", staff_id: supStaffId };
 
   const staffData = [
     { name: "Alice Kamau", email: "alice@wms.co.ke", type: "casual", joined: "2024-01-15", rate: 1500 },
@@ -123,7 +129,9 @@ async function seed() {
       message: `Welcome to YPPEOPLE WMS, ${s.name.split(" ")[0]}! Clock-in window is 08:00 – 09:00 daily.`,
       type: "info",
     });
-    console.log(`👤  Staff: ${user.email}  (${staffId})  /  Staff@1234`);
+
+    if (!summary.staff) summary.staff = [];
+    summary.staff.push({ email: user.email, password: "Staff@1234", staff_id: staffId, type: s.type });
 
     for (let add = 0; add < 21; add++) {
       const d = new Date();
@@ -156,24 +164,21 @@ async function seed() {
     });
   }
 
-  console.log(`
-╔══════════════════════════════════════════════════════╗
-║              YPPEOPLE WMS SEED COMPLETE               ║
-╠══════════════════════════════════════════════════════╣
-║  Admin       admin@wms.co.ke        Admin@1234       ║
-║  Supervisor  supervisor@wms.co.ke  Supervisor@1234 ║
-║  Staff       alice@wms.co.ke        Staff@1234       ║
-╚══════════════════════════════════════════════════════╝
-
-Start: npm start
-Open:  http://localhost:5000/
-`);
-
-  await mongoose.disconnect();
-  process.exit(0);
+  if (disconnect) await mongoose.disconnect();
+  return summary;
 }
 
-seed().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+module.exports = { seedDatabase };
+
+if (require.main === module) {
+  seedDatabase({ connect: true, disconnect: true })
+    .then((s) => {
+      console.log("✅ Seed complete");
+      console.log(s);
+      process.exit(0);
+    })
+    .catch((e) => {
+      console.error(e);
+      process.exit(1);
+    });
+}
