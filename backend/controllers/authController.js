@@ -68,12 +68,18 @@ exports.login = async (req, res) => {
       });
     }
 
-    if (user.status !== "approved" || !user.is_active) {
+    const effectiveStatus = user.status || (user.is_active ? "approved" : "pending");
+    if (user.status !== effectiveStatus) {
+      user.status = effectiveStatus;
+      await user.save({ validateModifiedOnly: true });
+    }
+
+    if (effectiveStatus !== "approved" || !user.is_active) {
       return res.status(403).json({
         success: false,
-        message: user.status === "pending" ? "Account pending approval." : "Account not approved.",
+        message: effectiveStatus === "pending" ? "Account pending approval." : "Account not approved.",
         code: "NOT_APPROVED",
-        status: user.status,
+        status: effectiveStatus,
       });
     }
 
@@ -414,6 +420,20 @@ exports.googleOAuthSuccess = async (req, res) => {
   try {
     const user = req.user;
     if (!user) return res.status(401).json({ success: false, message: "Google authentication failed." });
+
+    const effectiveStatus = user.status || (user.is_active ? "approved" : "pending");
+    if (user.status !== effectiveStatus) {
+      user.status = effectiveStatus;
+      await user.save({ validateModifiedOnly: true });
+    }
+    if (effectiveStatus !== "approved" || !user.is_active) {
+      return res.status(403).json({
+        success: false,
+        message: effectiveStatus === "pending" ? "Account pending approval." : "Account not approved.",
+        code: "NOT_APPROVED",
+        status: effectiveStatus,
+      });
+    }
 
     const { token: accessToken } = signAccess(user._id, user.role);
     const { raw: refreshToken, expiresAt } = await issueRefreshToken(user._id, getIP(req), getUA(req));

@@ -61,7 +61,6 @@ const userSchema = new mongoose.Schema(
 
 userSchema.index({ branch_id: 1, role: 1 });
 userSchema.index({ is_active: 1, role: 1 });
-userSchema.index({ staffId: 1 });
 userSchema.index({ status: 1, role: 1, is_active: 1 });
 
 userSchema.pre("save", async function (next) {

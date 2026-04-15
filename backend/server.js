@@ -17,6 +17,9 @@ const { sanitizeBody } = require("./middleware/sanitize");
 const app = express();
 const rootDir = path.join(__dirname, "..");
 
+// Required behind reverse proxies (Render, Nginx, etc.) so rate limiting and req.ip work correctly.
+app.set("trust proxy", process.env.TRUST_PROXY || 1);
+
 // CSP disabled: single-file SPA relies on inline handlers in app.html; strict CSP breaks onclick / navigation.
 app.use(
   helmet({

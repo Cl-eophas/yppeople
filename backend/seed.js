@@ -15,6 +15,7 @@ const Leave = require("./models/Leave");
 const Uniform = require("./models/Uniform");
 const AuditLog = require("./models/AuditLog");
 const SecurityEvent = require("./models/SecurityEvent");
+const Contract = require("./models/Contract");
 const Shift = require("./models/Shift");
 const OffDay = require("./models/OffDay");
 const AttendanceReport = require("./models/AttendanceReport");
@@ -66,7 +67,9 @@ async function seedDatabase({ connect = true, disconnect = true } = {}) {
     password: "Admin@1234",
     role: "admin",
     branch_id: branch._id,
+    status: "approved",
     is_active: true,
+    profileCompleted: true,
   });
   summary.admin = { email: admin.email, password: "Admin@1234" };
 
@@ -76,7 +79,9 @@ async function seedDatabase({ connect = true, disconnect = true } = {}) {
     password: "Supervisor@1234",
     role: "supervisor",
     branch_id: branch._id,
+    status: "approved",
     is_active: true,
+    profileCompleted: true,
   });
   const supJoin = new Date("2023-01-01");
   const supStaffId = await nextYPStaffId(supJoin);
@@ -105,7 +110,9 @@ async function seedDatabase({ connect = true, disconnect = true } = {}) {
       password: "Staff@1234",
       role: "staff",
       branch_id: branch._id,
+      status: "approved",
       is_active: true,
+      profileCompleted: true,
     });
     const joinDate = new Date(s.joined);
     const accrued = calcAnnualLeaveAccrual(joinDate);
@@ -118,6 +125,21 @@ async function seedDatabase({ connect = true, disconnect = true } = {}) {
       join_date: joinDate,
       pay_rate: s.rate,
     });
+    user.staffId = staffId;
+    await user.save({ validateModifiedOnly: true });
+
+    // Ensure contract-type staff can clock in immediately (seed accepted active contract)
+    if (s.type === "contract") {
+      await Contract.create({
+        staff_id: user._id,
+        contract_text: "Seed contract: Staff employment agreement (test environment).",
+        start_date: new Date(Date.now() - 30 * 86400000),
+        end_date: new Date(Date.now() + 365 * 86400000),
+        accepted: true,
+        signed_at: new Date(),
+        created_by: admin._id,
+      });
+    }
     await LeaveBalance.create({
       staff_id: user._id,
       annual_balance: accrued,
@@ -148,6 +170,20 @@ async function seedDatabase({ connect = true, disconnect = true } = {}) {
       });
     }
   }
+
+  supervisor.staffId = supStaffId;
+  await supervisor.save({ validateModifiedOnly: true });
+
+  // Ensure contract-type supervisor can clock in immediately (seed accepted active contract)
+  await Contract.create({
+    staff_id: supervisor._id,
+    contract_text: "Seed contract: Supervisor employment agreement (test environment).",
+    start_date: new Date(Date.now() - 30 * 86400000),
+    end_date: new Date(Date.now() + 365 * 86400000),
+    accepted: true,
+    signed_at: new Date(),
+    created_by: admin._id,
+  });
 
   for (let add = 0; add < 21; add++) {
     const d = new Date();
