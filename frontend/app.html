@@ -1,0 +1,3402 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<link rel="icon" type="image/png" href="assets/yp-logo.png"/>
+<title>YPPEOPLE — Smart Workforce Management</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js" crossorigin=""></script>
+<style>
+/* ── Design Tokens ────────────────────────────────────────────── */
+:root {
+  --yp-yellow:#FFCC00;
+  --yp-dark:#0D0D0D;
+  --yp-secondary:#1A1A1A;
+  --bg:#080c16;
+  --surface:#0f1524;
+  --surface2:#171e30;
+  --surface3:#1d263c;
+  --border:rgba(255,255,255,0.06);
+  --border2:rgba(255,255,255,0.13);
+  --text:#dde4f8;
+  --muted:#6b77a8;
+  --accent:#4f8ef7;
+  --accent2:#7c4dff;
+  --success:#00d68f;
+  --warning:#ffb347;
+  --danger:#ff4d6d;
+  --info:#38bdf8;
+  --radius:12px;
+  --radius-sm:8px;
+  /* role accent overrides applied per role */
+  --role-color:var(--accent);
+}
+/* Role themes */
+body.role-admin    { --role-color:#ff4d6d; --role-bg:rgba(255,77,109,0.12); --role-border:rgba(255,77,109,0.3); }
+body.role-supervisor { --role-color:#7c4dff; --role-bg:rgba(124,77,255,0.12); --role-border:rgba(124,77,255,0.3); }
+body.role-staff    { --role-color:#4f8ef7; --role-bg:rgba(79,142,247,0.12); --role-border:rgba(79,142,247,0.3); }
+
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;font-size:14px;}
+
+/* ── Layout ───────────────────────────────────────────────────── */
+.shell{display:flex;min-height:100vh;}
+.sidebar{
+  width:240px;flex-shrink:0;background:var(--surface);
+  border-right:1px solid var(--border);
+  display:flex;flex-direction:column;
+  position:sticky;top:0;height:100vh;overflow-y:auto;
+  transition:transform 0.2s;
+}
+.main{flex:1;overflow-y:auto;min-width:0;}
+
+/* ── Sidebar ──────────────────────────────────────────────────── */
+.brand{padding:18px 16px 14px;border-bottom:1px solid var(--border);}
+.brand-logo{
+  font-size:15px;font-weight:900;letter-spacing:2px;
+  background:linear-gradient(90deg,var(--role-color),var(--accent2));
+  background-clip:text;
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+}
+.brand-sub{font-size:10px;color:var(--muted);margin-top:2px;letter-spacing:0.5px;}
+
+.user-card{
+  padding:14px 16px;border-bottom:1px solid var(--border);
+  display:flex;align-items:center;gap:10px;
+}
+.avatar{
+  width:38px;height:38px;border-radius:50%;flex-shrink:0;
+  display:flex;align-items:center;justify-content:center;
+  font-size:13px;font-weight:800;
+  background:linear-gradient(135deg,var(--role-color),var(--accent2));
+}
+.user-name{font-size:13px;font-weight:700;}
+.user-meta{font-size:11px;color:var(--muted);margin-top:2px;}
+.role-pill{
+  display:inline-block;padding:3px 9px;border-radius:20px;
+  font-size:10px;font-weight:800;letter-spacing:0.5px;text-transform:uppercase;
+  background:var(--role-bg);color:var(--role-color);border:1px solid var(--role-border);
+  margin-top:4px;
+}
+
+nav{flex:1;padding:6px 0;}
+.nav-section{
+  font-size:9px;font-weight:800;color:var(--muted);letter-spacing:1.2px;
+  padding:12px 16px 4px;text-transform:uppercase;
+}
+.nav-item{
+  display:flex;align-items:center;gap:10px;
+  padding:9px 16px;cursor:pointer;color:var(--muted);
+  font-size:13px;font-weight:500;transition:all 0.12s;
+  border-left:3px solid transparent;user-select:none;
+}
+.nav-item:hover{background:var(--surface2);color:var(--text);}
+.nav-item.active{background:var(--surface2);color:var(--role-color);border-left-color:var(--role-color);}
+.nav-icon{width:18px;text-align:center;font-size:14px;flex-shrink:0;}
+.nav-badge{
+  margin-left:auto;background:var(--danger);color:#fff;
+  font-size:10px;font-weight:800;border-radius:10px;
+  padding:1px 7px;min-width:20px;text-align:center;
+}
+
+.signout{
+  margin:12px 14px;padding:10px;
+  background:rgba(255,77,109,0.08);border:1px solid rgba(255,77,109,0.2);
+  color:var(--danger);border-radius:var(--radius-sm);
+  cursor:pointer;font-size:12px;font-weight:700;text-align:center;
+  transition:all 0.12s;
+}
+.signout:hover{background:rgba(255,77,109,0.18);}
+
+#br-map{height:280px;border-radius:var(--radius-sm);border:1px solid var(--border);z-index:0;}
+.leaflet-container{background:var(--surface2);font-family:inherit;}
+#br-search-results{max-height:140px;overflow-y:auto;margin-top:8px;}
+#m-contract-scroll{max-height:240px;overflow-y:auto;white-space:pre-wrap;font-size:13px;line-height:1.45;padding:12px;background:var(--surface2);border-radius:var(--radius-sm);border:1px solid var(--border);}
+
+/* ── Page ─────────────────────────────────────────────────────── */
+.page-head{
+  padding:22px 28px 16px;
+  border-bottom:1px solid var(--border);
+  display:flex;align-items:center;justify-content:space-between;
+  flex-wrap:wrap;gap:10px;
+}
+.page-title{font-size:19px;font-weight:800;}
+.page-sub{font-size:12px;color:var(--muted);margin-top:3px;}
+.page-body{padding:20px 28px 40px;}
+.view{display:none;}.view.active{display:block;}
+
+/* ── Cards ────────────────────────────────────────────────────── */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px;}
+.card-head{font-size:10px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:0.7px;margin-bottom:14px;}
+.card+.card{margin-top:16px;}
+.raised{background:var(--surface2);border:1px solid var(--border2);}
+
+/* ── Stat grid ────────────────────────────────────────────────── */
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:20px;}
+.stat{background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px;}
+.stat-lbl{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.6px;}
+.stat-val{font-size:28px;font-weight:800;margin-top:4px;line-height:1;}
+.stat-hint{font-size:11px;color:var(--muted);margin-top:4px;}
+.va{color:var(--accent);}.vs{color:var(--success);}.vw{color:var(--warning);}.vd{color:var(--danger);}.vi{color:var(--info);}.vr{color:var(--role-color);}
+
+/* ── Buttons ──────────────────────────────────────────────────── */
+.btn{padding:9px 18px;border-radius:var(--radius-sm);font-size:13px;font-weight:600;cursor:pointer;border:none;transition:all 0.12s;}
+.btn-primary{background:var(--accent);color:#fff;}.btn-primary:hover{background:#3d7de8;}
+.btn-role{background:var(--role-color);color:#fff;}.btn-role:hover{filter:brightness(0.88);}
+.btn-success{background:var(--success);color:#000;font-size:12px;padding:6px 14px;}
+.btn-danger{background:var(--danger);color:#fff;font-size:12px;padding:6px 14px;}
+.btn-warning{background:var(--warning);color:#000;font-size:12px;padding:6px 14px;}
+.btn-ghost{background:transparent;color:var(--muted);border:1px solid var(--border);}
+.btn-ghost:hover{background:var(--surface2);color:var(--text);}
+.btn-sm{font-size:11px;padding:5px 12px;}
+.btn:disabled{opacity:0.38;cursor:not-allowed;}
+
+/* ── Tables ───────────────────────────────────────────────────── */
+.tbl{width:100%;border-collapse:collapse;}
+.tbl th{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;padding:8px 12px;text-align:left;border-bottom:1px solid var(--border);white-space:nowrap;}
+.tbl td{padding:11px 12px;border-bottom:1px solid rgba(255,255,255,0.03);font-size:13px;vertical-align:middle;}
+.tbl tr:hover td{background:rgba(255,255,255,0.02);}
+.tbl-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;}
+.tbl-wrap .tbl{min-width:720px;}
+
+/* ── Badges ───────────────────────────────────────────────────── */
+.badge{display:inline-flex;align-items:center;padding:3px 9px;border-radius:12px;font-size:11px;font-weight:700;white-space:nowrap;}
+.b-admin{background:rgba(255,77,109,0.15);color:var(--danger);}
+.b-supervisor{background:rgba(124,77,255,0.15);color:var(--accent2);}
+.b-staff{background:rgba(79,142,247,0.15);color:var(--accent);}
+.b-active,.b-present,.b-approved{background:rgba(0,214,143,0.14);color:var(--success);}
+.b-inactive,.b-absent,.b-rejected{background:rgba(255,77,109,0.12);color:var(--danger);}
+.b-late,.b-pending,.b-warning{background:rgba(255,179,71,0.14);color:var(--warning);}
+.b-info,.b-leave,.b-pdoc{background:rgba(79,142,247,0.14);color:var(--accent);}
+.b-forced{background:rgba(124,77,255,0.14);color:var(--accent2);}
+
+/* ── Forms ────────────────────────────────────────────────────── */
+.form-group{margin-bottom:14px;}
+.form-label{display:block;font-size:10px;font-weight:800;color:var(--muted);margin-bottom:5px;text-transform:uppercase;letter-spacing:0.5px;}
+.form-input,.form-select,.form-textarea{
+  width:100%;padding:10px 12px;
+  background:var(--surface2);border:1px solid var(--border);
+  border-radius:var(--radius-sm);color:var(--text);
+  font-size:13px;outline:none;transition:border 0.12s;font-family:inherit;
+}
+.form-input:focus,.form-select:focus,.form-textarea:focus{border-color:var(--role-color);}
+.form-textarea{resize:vertical;min-height:72px;}
+.form-select option{background:var(--surface2);}
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+.g3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;}
+
+/* ── Alerts ───────────────────────────────────────────────────── */
+.msg{padding:10px 14px;border-radius:var(--radius-sm);font-size:13px;margin-bottom:12px;}
+.msg-error{background:rgba(255,77,109,0.1);border:1px solid rgba(255,77,109,0.3);color:#fca5a5;}
+.msg-success{background:rgba(0,214,143,0.1);border:1px solid rgba(0,214,143,0.3);color:var(--success);}
+.msg-warning{background:rgba(255,179,71,0.1);border:1px solid rgba(255,179,71,0.3);color:var(--warning);}
+.msg-info{background:rgba(56,189,248,0.1);border:1px solid rgba(56,189,248,0.3);color:var(--info);}
+
+/* ── Modals ───────────────────────────────────────────────────── */
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,0.78);display:flex;align-items:center;justify-content:center;z-index:300;}
+.modal{
+  background:var(--surface);
+  border:1px solid var(--border2);
+  border-radius:16px;
+  padding:28px;
+  width:calc(100% - 28px);
+  max-width:470px;
+  max-height:calc(100dvh - 28px);
+  overflow:auto;
+  -webkit-overflow-scrolling:touch;
+}
+.modal-title{font-size:17px;font-weight:800;margin-bottom:4px;}
+.modal-sub{font-size:13px;color:var(--muted);margin-bottom:18px;}
+.modal-footer{display:flex;justify-content:flex-end;gap:10px;margin-top:18px;}
+
+/* ── Misc ─────────────────────────────────────────────────────── */
+.spinner{width:22px;height:22px;border:2px solid var(--border);border-top-color:var(--role-color);border-radius:50%;animation:spin 0.7s linear infinite;margin:24px auto;}
+@keyframes spin{to{transform:rotate(360deg);}}
+.empty{color:var(--muted);font-size:13px;padding:12px 0;}
+.divider{border:none;border-top:1px solid var(--border);margin:16px 0;}
+.clock-face{font-size:40px;font-weight:800;letter-spacing:-1px;font-variant-numeric:tabular-nums;line-height:1;}
+.pulse{animation:pulse 1.4s ease-in-out infinite;}
+@keyframes pulse{0%,100%{opacity:1;}50%{opacity:0.5;}}
+.tag{display:inline-block;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:600;background:var(--surface3);color:var(--muted);}
+.leave-bar{height:6px;background:var(--border);border-radius:3px;overflow:hidden;margin-top:5px;}
+.leave-fill{height:100%;border-radius:3px;transition:width 0.5s;}
+
+/* ── GPS chip ─────────────────────────────────────────────────── */
+.gps-chip{display:inline-flex;align-items:center;gap:6px;padding:5px 12px;border-radius:20px;font-size:11px;font-weight:600;}
+.gps-ok{background:rgba(0,214,143,0.12);color:var(--success);border:1px solid rgba(0,214,143,0.25);}
+.gps-err{background:rgba(255,77,109,0.12);color:var(--danger);border:1px solid rgba(255,77,109,0.25);}
+.gps-wait{background:rgba(255,179,71,0.12);color:var(--warning);border:1px solid rgba(255,179,71,0.25);}
+
+/* ── Clock panel ──────────────────────────────────────────────── */
+.clock-panel{background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:24px;display:flex;flex-direction:column;align-items:center;gap:14px;margin-bottom:20px;}
+.clock-status{display:flex;align-items:center;gap:8px;padding:8px 18px;border-radius:20px;font-size:13px;font-weight:700;}
+.cs-in{background:rgba(0,214,143,0.14);color:var(--success);border:1px solid rgba(0,214,143,0.3);}
+.cs-out{background:rgba(107,119,168,0.14);color:var(--muted);border:1px solid var(--border);}
+.cs-dot{width:8px;height:8px;border-radius:50%;}
+.dot-in{background:var(--success);box-shadow:0 0 7px var(--success);}
+.dot-out{background:var(--muted);}
+
+/* ── Landing hero ─────────────────────────────────────────────── */
+#stage-landing{
+  min-height:100vh;position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  padding:32px 20px;overflow:hidden;
+  animation:fadeSlide .85s ease-out both;
+}
+@keyframes fadeSlide{from{opacity:0;transform:translateY(18px);}to{opacity:1;transform:none;}}
+.hero-bg{
+  position:absolute;inset:0;background:url('assets/hero-bg.png') center/cover no-repeat;
+  transform:scale(1);animation:heroZoom 22s ease-in-out infinite alternate;
+  pointer-events:none;
+}
+@keyframes heroZoom{from{transform:scale(1);}to{transform:scale(1.05);}}
+.hero-overlay{
+  position:absolute;inset:0;
+  background:linear-gradient(135deg,rgba(0,0,0,0.7),rgba(255,204,0,0.4));
+  pointer-events:none;
+}
+.hero-particles{position:absolute;inset:0;pointer-events:none;opacity:.35;
+  background-image:radial-gradient(circle at 20% 30%,rgba(255,204,0,.15) 0,transparent 40%),
+  radial-gradient(circle at 80% 70%,rgba(255,255,255,.08) 0,transparent 35%);}
+.hero-inner{position:relative;z-index:2;text-align:center;max-width:720px;width:100%;padding:0 16px;pointer-events:auto;}
+.hero-logo{width:88px;height:88px;margin:0 auto 20px;border-radius:22px;box-shadow:0 12px 40px rgba(0,0,0,.45);
+  object-fit:cover;animation:logoHue 4s ease-in-out infinite alternate;}
+@keyframes logoHue{from{filter:brightness(1);}to{filter:brightness(1.15) drop-shadow(0 0 12px rgba(255,204,0,.5));}}
+.hero-title{font-size:clamp(2rem,5vw,3.2rem);font-weight:900;letter-spacing:.12em;color:#fff;text-shadow:0 2px 24px rgba(0,0,0,.5);}
+.hero-sub{margin-top:10px;font-size:clamp(1rem,2.4vw,1.25rem);color:rgba(255,255,255,.92);font-weight:600;}
+.hero-typing{
+  margin-top:22px;min-height:2.2em;font-size:clamp(1.05rem,2.5vw,1.35rem);font-weight:600;color:var(--yp-yellow);
+  text-shadow:0 0 20px rgba(255,204,0,.35);
+}
+.hero-stats{margin-top:18px;font-size:14px;color:rgba(255,255,255,.75);letter-spacing:.02em;}
+.hero-cta{margin-top:32px;display:flex;gap:14px;justify-content:center;flex-wrap:wrap;}
+.hero-alt-login{margin-top:22px;font-size:14px;}
+.hero-login-anchor{
+  color:#fff;font-weight:700;text-decoration:underline;text-underline-offset:4px;
+  text-decoration-color:rgba(255,204,0,.7);
+}
+.hero-login-anchor:hover{color:var(--yp-yellow);}
+.btn-yp{
+  padding:14px 28px;border-radius:999px;font-size:14px;font-weight:800;border:none;cursor:pointer;
+  transition:transform .2s ease,box-shadow .2s ease,background .2s ease;position:relative;overflow:hidden;
+  touch-action:manipulation;-webkit-tap-highlight-color:transparent;
+  min-height:48px;
+}
+.btn-yp:active{transform:scale(.97);}
+.btn-yp-yellow{background:var(--yp-yellow);color:#0D0D0D;box-shadow:0 8px 28px rgba(255,204,0,.35);}
+.btn-yp-yellow:hover{transform:scale(1.05);box-shadow:0 12px 36px rgba(255,204,0,.5);}
+.btn-yp-ghost{background:rgba(255,255,255,.12);color:#fff;border:1px solid rgba(255,255,255,.35);backdrop-filter:blur(10px);}
+.btn-yp-ghost:hover{transform:scale(1.05);background:rgba(255,255,255,.2);}
+.btn-yp .ripple{position:absolute;border-radius:50%;background:rgba(255,255,255,.45);transform:scale(0);animation:ripple .6s linear;pointer-events:none;}
+@keyframes ripple{to{transform:scale(4);opacity:0;}}
+
+/* ── Auth split (full login / sign-up page) ───────────────────── */
+#stage-auth{
+  display:none;
+  flex-direction:column;
+  min-height:100vh;
+  min-height:100dvh;
+  background:var(--yp-dark);
+  position:relative;
+  z-index:20;
+  animation:fadeSlide .55s ease-out both;
+}
+.auth-split{display:grid;grid-template-columns:1fr 1fr;min-height:min(100vh,100dvh);flex:1;}
+.auth-brand{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;padding:48px 36px;
+  background:linear-gradient(160deg,#1A1A1A 0%,#0D0D0D 50%,#1a1508 100%);
+  border-right:1px solid rgba(255,204,0,.12);position:relative;overflow:hidden;
+}
+.auth-brand::before{
+  content:'';position:absolute;inset:0;opacity:.08;
+  background:radial-gradient(circle at 30% 40%,var(--yp-yellow),transparent 50%);
+  pointer-events:none;
+}
+.auth-brand-inner{position:relative;text-align:center;z-index:1;}
+.auth-logo{width:100px;height:100px;border-radius:24px;object-fit:cover;
+  animation:brandPulse 3s ease-in-out infinite;}
+@keyframes brandPulse{
+  0%,100%{filter:drop-shadow(0 0 0 rgba(255,204,0,0));}
+  50%{filter:drop-shadow(0 0 16px rgba(255,204,0,.55));}
+}
+.auth-tagline{margin-top:18px;font-size:1.15rem;font-weight:700;color:#fff;letter-spacing:.02em;}
+.auth-illus{margin-top:28px;font-size:52px;opacity:.85;animation:floatY 5s ease-in-out infinite;}
+@keyframes floatY{0%,100%{transform:translateY(0);}50%{transform:translateY(-8px);}}
+.auth-form-side{
+  display:flex;align-items:center;justify-content:center;padding:40px 28px;
+  background:linear-gradient(145deg,rgba(26,26,26,.97),rgba(13,13,13,.99));
+}
+.auth-glass{
+  width:100%;max-width:440px;padding:36px 32px;border-radius:20px;
+  background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.1);
+  box-shadow:0 20px 60px rgba(0,0,0,.45);backdrop-filter:blur(16px);
+}
+.auth-page-title{
+  font-size:1.65rem;font-weight:900;color:#fff;margin:0 0 6px;letter-spacing:.04em;
+}
+.auth-page-desc{font-size:13px;color:var(--muted);margin:0 0 22px;line-height:1.45;}
+.auth-tabs{display:flex;gap:0;margin-bottom:26px;border-radius:12px;overflow:hidden;border:1px solid rgba(255,255,255,.1);}
+.auth-tab{
+  flex:1;padding:12px;text-align:center;font-weight:800;font-size:13px;cursor:pointer;
+  background:transparent;color:var(--muted);transition:background .2s,color .2s;
+  border:none;font-family:inherit;-webkit-tap-highlight-color:transparent;touch-action:manipulation;
+}
+.auth-tab.active{background:rgba(255,204,0,.15);color:var(--yp-yellow);}
+.auth-panel{display:none;animation:panelSlide .4s ease;}
+.auth-panel.active{display:block;}
+@keyframes panelSlide{from{opacity:0;transform:translateX(12px);}to{opacity:1;transform:none;}}
+.floating-label{position:relative;margin-bottom:20px;}
+.floating-label input,.floating-label select{
+  width:100%;padding:16px 14px 8px;background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.12);
+  border-radius:12px;color:var(--text);font-size:14px;outline:none;transition:border-color .2s,box-shadow .2s;
+}
+.floating-label input:focus,.floating-label select:focus{
+  border-color:var(--yp-yellow);box-shadow:0 0 0 3px rgba(255,204,0,.2);
+}
+.floating-label label{
+  position:absolute;left:14px;top:50%;transform:translateY(-50%);font-size:13px;color:var(--muted);
+  pointer-events:none;transition:all .2s ease;
+}
+.floating-label input:focus+label,.floating-label input:not(:placeholder-shown)+label,
+.floating-label select:focus+label,.floating-label select:not([value=""])+label{
+  top:8px;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:var(--yp-yellow);
+}
+.row-between{display:flex;align-items:center;justify-content:space-between;margin:12px 0 20px;font-size:12px;color:var(--muted);flex-wrap:wrap;gap:10px;}
+.row-between label{display:flex;align-items:center;gap:8px;cursor:pointer;}
+.btn-clock-in{
+  width:100%;padding:14px;border-radius:12px;border:none;font-weight:900;font-size:15px;cursor:pointer;
+  background:var(--yp-yellow);color:#0D0D0D;transition:transform .2s,filter .2s;
+}
+.btn-clock-in:hover{transform:scale(1.03);filter:brightness(1.05);}
+.btn-clock-in:active{transform:scale(.98);}
+.signup-hint{font-size:12px;color:var(--muted);margin-top:14px;line-height:1.5;}
+
+/* ── Loader overlay ───────────────────────────────────────────── */
+#loader-overlay{
+  display:none;position:fixed;inset:0;z-index:500;background:rgba(13,13,13,.88);
+  flex-direction:column;align-items:center;justify-content:center;backdrop-filter:blur(8px);
+}
+#loader-overlay.active{display:flex;animation:fadeSlide .35s ease;}
+.loader-clock{
+  width:72px;height:72px;border-radius:50%;border:3px solid rgba(255,204,0,.25);
+  border-top-color:var(--yp-yellow);animation:spin .9s linear infinite;margin-bottom:20px;
+}
+.loader-logo{width:64px;height:64px;border-radius:16px;object-fit:cover;animation:pulse 1.4s ease-in-out infinite;}
+.loader-text{margin-top:16px;font-size:14px;font-weight:600;color:rgba(255,255,255,.85);}
+
+@media(max-width:900px){
+  .auth-split{grid-template-columns:1fr;}
+  /* Form first on phones — users see email/password immediately */
+  .auth-form-side{order:-1;padding:24px 16px 12px;}
+  .auth-brand{order:1;min-height:auto;padding:24px 20px 32px;border-right:none;border-top:1px solid rgba(255,204,0,.12);border-bottom:none;}
+  .auth-glass{padding:28px 20px;}
+  .hero-stats{font-size:12px;padding:0 8px;line-height:1.5;}
+}
+
+/* ── Security event ───────────────────────────────────────────── */
+.sec-event{display:flex;align-items:flex-start;gap:10px;padding:10px 0;border-bottom:1px solid var(--border);}
+.sec-event:last-child{border-bottom:none;}
+.sec-icon{width:30px;height:30px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:13px;flex-shrink:0;}
+
+/* ── Notification item ────────────────────────────────────────── */
+.notif-row{display:flex;gap:10px;padding:12px 0;border-bottom:1px solid rgba(255,255,255,0.04);}
+.notif-row:last-child{border-bottom:none;}
+.notif-dot{width:8px;height:8px;border-radius:50%;margin-top:4px;flex-shrink:0;}
+.nd-unread{background:var(--role-color);}
+.nd-read{background:var(--border);}
+
+/* ── Mobile app chrome (drawer nav) ───────────────────────────── */
+.mobile-topbar{
+  display:none;align-items:center;gap:12px;padding:12px 14px;
+  background:var(--surface);border-bottom:1px solid var(--border);
+  flex-shrink:0;position:sticky;top:0;z-index:50;
+}
+.nav-toggle-btn{
+  width:44px;height:44px;border-radius:10px;border:1px solid var(--border);
+  background:var(--surface2);color:var(--text);font-size:20px;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;
+  touch-action:manipulation;-webkit-tap-highlight-color:transparent;
+}
+.mobile-brand{font-weight:900;font-size:14px;letter-spacing:.12em;background:linear-gradient(90deg,var(--role-color),var(--accent2));background-clip:text;-webkit-background-clip:text;-webkit-text-fill-color:transparent;}
+.main{flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden;}
+.main-inner{flex:1;overflow-y:auto;min-height:0;-webkit-overflow-scrolling:touch;}
+.sidebar-backdrop{
+  display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:398;
+  touch-action:manipulation;
+}
+.sidebar-backdrop.show{display:block;}
+
+/* ── Responsive ───────────────────────────────────────────────── */
+@media(max-width:800px){
+  .mobile-topbar{display:flex;}
+  .sidebar{
+    position:fixed;left:0;top:0;bottom:0;width:min(280px,88vw);height:100%;max-height:100dvh;
+    z-index:400;transform:translateX(-100%);transition:transform .28s ease;
+    box-shadow:none;border-right:1px solid var(--border);
+  }
+  .sidebar.sidebar-open{transform:translateX(0);box-shadow:8px 0 40px rgba(0,0,0,.45);}
+  .g2,.g3{grid-template-columns:1fr;}
+  .stat-grid{grid-template-columns:1fr;}
+  .page-head,.page-body{padding-left:14px;padding-right:14px;}
+  .tbl{font-size:12px;}
+  .tbl th,.tbl td{padding:8px 6px;}
+  .btn{min-height:44px;}
+  .btn-sm{min-height:auto;}
+  .card{padding:16px;}
+  .page-title{font-size:17px;}
+  .page-sub{font-size:12px;}
+  #br-map{height:220px;}
+}
+
+@media(max-width:480px){
+  .page-head{padding-top:16px;padding-bottom:12px;}
+  .page-body{padding-top:14px;}
+  .modal{padding:18px;width:calc(100% - 18px);max-height:calc(100dvh - 18px);}
+  .form-input,.form-select,.form-textarea{font-size:14px;padding:12px;}
+}
+
+/* ── Token refresh indicator ─────────────────────────────────── */
+.session-bar{height:2px;background:linear-gradient(90deg,var(--role-color),var(--accent2));position:fixed;top:0;left:0;right:0;z-index:999;transition:opacity 0.3s;opacity:0;}
+.session-bar.active{opacity:1;}
+</style>
+</head>
+<body>
+
+<div class="session-bar" id="session-bar"></div>
+
+<!-- ════════════════════════════════════════════════
+     LANDING + AUTH
+════════════════════════════════════════════════ -->
+<div id="stage-landing">
+  <div class="hero-bg" aria-hidden="true"></div>
+  <div class="hero-overlay" aria-hidden="true"></div>
+  <div class="hero-particles" aria-hidden="true"></div>
+  <div class="hero-inner">
+    <img class="hero-logo" src="assets/yp-logo.png" alt="YPPEOPLE"/>
+    <h1 class="hero-title">YPPEOPLE</h1>
+    <p class="hero-sub">Smart Workforce Management System</p>
+    <p class="hero-typing" id="hero-typing" aria-live="polite"></p>
+    <p class="hero-stats" id="hero-stats" aria-live="polite">… · Secure · Geofenced</p>
+    <div class="hero-cta">
+      <button type="button" class="btn-yp btn-yp-yellow" id="btn-hero-login">Login</button>
+      <button type="button" class="btn-yp btn-yp-ghost" id="btn-hero-start">Get Started</button>
+    </div>
+    <p class="hero-alt-login">
+      <a href="/login" class="hero-login-anchor">Sign in with email &amp; password</a>
+    </p>
+  </div>
+</div>
+
+<div id="stage-auth">
+  <div class="auth-split">
+    <div class="auth-brand">
+      <div class="auth-brand-inner">
+        <img class="auth-logo" src="assets/yp-logo.png" alt=""/>
+        <div class="auth-tagline">Work Smarter. Track Better.</div>
+        <div class="auth-illus" aria-hidden="true">🕒</div>
+        <button type="button" class="btn btn-ghost" id="btn-auth-back" style="margin-top:28px;color:rgba(255,255,255,.6);border-color:rgba(255,255,255,.2);">← Back to home</button>
+      </div>
+    </div>
+    <div class="auth-form-side">
+      <div class="auth-glass">
+        <h1 class="auth-page-title" id="auth-page-title">Sign in</h1>
+        <p class="auth-page-desc" id="auth-page-desc">Enter your work email and password to open your dashboard.</p>
+        <div class="auth-tabs">
+          <button type="button" id="tab-login" class="auth-tab active">Login</button>
+          <button type="button" id="tab-signup" class="auth-tab">Sign Up</button>
+        </div>
+        <div id="auth-panel-login" class="auth-panel active">
+          <div id="login-msg"></div>
+          <div class="floating-label">
+            <input id="l-email" type="email" autocomplete="email" placeholder=" "/>
+            <label>Email</label>
+          </div>
+          <div class="floating-label">
+            <input id="l-pass" type="password" autocomplete="current-password" placeholder=" "/>
+            <label>Password</label>
+          </div>
+          <div class="row-between">
+            <label><input type="checkbox" id="l-remember"/> Remember me</label>
+            <button type="button" class="link-like" id="btn-forgot-pass" style="background:none;border:none;color:var(--yp-yellow);cursor:pointer;font-weight:600;font-size:inherit;font-family:inherit;padding:0;">Forgot password?</button>
+          </div>
+          <button type="button" class="btn-clock-in" id="btn-do-login">Clock In</button>
+          <p class="signup-hint">Roles (Admin · Supervisor · Staff) are detected after sign-in. Enterprise-grade audit trail.</p>
+        </div>
+        <div id="auth-panel-signup" class="auth-panel">
+          <div id="signup-msg"></div>
+          <div class="floating-label">
+            <input id="su-name" type="text" autocomplete="name" placeholder=" "/>
+            <label>Full name</label>
+          </div>
+          <div class="floating-label">
+            <input id="su-email" type="email" autocomplete="email" placeholder=" "/>
+            <label>Email</label>
+          </div>
+          <div class="form-group" style="margin-bottom:20px;">
+            <label class="form-label">Role</label>
+            <select id="su-role" class="form-input">
+              <option value="">Select role</option>
+              <option value="staff">Staff</option>
+              <option value="supervisor">Supervisor</option>
+            </select>
+          </div>
+          <div class="floating-label">
+            <input id="su-pass" type="password" autocomplete="new-password" placeholder=" "/>
+            <label>Password</label>
+          </div>
+          <div class="floating-label">
+            <input id="su-pass2" type="password" autocomplete="new-password" placeholder=" "/>
+            <label>Confirm password</label>
+          </div>
+          <button type="button" class="btn-clock-in" id="btn-signup-submit">Request access</button>
+          <p class="signup-hint">New accounts are issued by your organization. This form checks your details and explains next steps.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="loader-overlay">
+  <div class="loader-clock" id="loader-clock"></div>
+  <img class="loader-logo" id="loader-logo" src="assets/yp-logo.png" alt="" style="display:none;"/>
+  <p class="loader-text" id="loader-text">Syncing Workforce Data...</p>
+</div>
+
+<!-- ════════════════════════════════════════════════
+     APP SHELL
+════════════════════════════════════════════════ -->
+<div id="app-shell" class="shell" style="display:none;">
+
+  <div id="sidebar-backdrop" class="sidebar-backdrop" role="presentation" aria-hidden="true"></div>
+
+  <!-- SIDEBAR -->
+  <div class="sidebar" id="sidebar">
+    <div class="brand">
+      <div class="brand-logo">YPPEOPLE</div>
+      <div class="brand-sub">WORKFORCE MANAGEMENT</div>
+    </div>
+
+    <div class="user-card">
+      <div class="avatar" id="sb-avatar">?</div>
+      <div>
+        <div class="user-name" id="sb-name">—</div>
+        <div class="user-meta" id="sb-branch">—</div>
+        <div class="role-pill" id="sb-role-pill">—</div>
+      </div>
+    </div>
+
+    <nav id="nav-menu"></nav>
+
+    <div class="signout" id="btn-signout" role="button" tabindex="0">⎋ Sign Out</div>
+  </div>
+
+  <!-- MAIN -->
+  <div class="main">
+    <header class="mobile-topbar" id="mobile-topbar">
+      <button type="button" class="nav-toggle-btn" id="nav-toggle" aria-label="Open menu">☰</button>
+      <span class="mobile-brand">YPPEOPLE</span>
+    </header>
+    <div id="main-area" class="main-inner"></div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════
+     MODALS (shared)
+════════════════════════════════════════════════ -->
+<!-- Delete user -->
+<div id="m-delete" class="overlay" style="display:none;">
+  <div class="modal">
+    <div class="modal-title" style="color:var(--danger);">⚠ Permanent Deletion</div>
+    <div class="modal-sub">This cannot be undone. All associated data is removed.</div>
+    <div id="m-delete-msg"></div>
+    <div class="form-group"><label class="form-label">Type DELETE to confirm</label><input class="form-input" id="m-del-confirm" placeholder="DELETE"/></div>
+    <div class="form-group"><label class="form-label">Your Admin Password</label><input class="form-input" id="m-del-pass" type="password" placeholder="••••••••"/></div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('m-delete')">Cancel</button>
+      <button class="btn btn-danger" onclick="submitDelete()">Delete Permanently</button>
+    </div>
+  </div>
+</div>
+
+<!-- Leave reject -->
+<div id="m-reject" class="overlay" style="display:none;">
+  <div class="modal">
+    <div class="modal-title">Reject Leave Request</div>
+    <div class="modal-sub">Balance will be automatically refunded.</div>
+    <div id="m-reject-msg"></div>
+    <div class="form-group"><label class="form-label">Rejection Reason</label><textarea class="form-textarea" id="m-reject-reason" placeholder="Explain why…"></textarea></div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('m-reject')">Cancel</button>
+      <button class="btn btn-danger" onclick="submitReject()">Confirm Rejection</button>
+    </div>
+  </div>
+</div>
+
+<!-- Edit attendance -->
+<div id="m-att" class="overlay" style="display:none;">
+  <div class="modal">
+    <div class="modal-title">Edit Attendance Record</div>
+    <div class="modal-sub">All edits are permanently logged.</div>
+    <div id="m-att-msg"></div>
+    <div class="g2">
+      <div class="form-group"><label class="form-label">Clock In</label><input class="form-input" type="datetime-local" id="m-att-in"/></div>
+      <div class="form-group"><label class="form-label">Clock Out</label><input class="form-input" type="datetime-local" id="m-att-out"/></div>
+    </div>
+    <div class="form-group"><label class="form-label">Reason (required)</label><input class="form-input" id="m-att-reason" placeholder="Admin correction…"/></div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('m-att')">Cancel</button>
+      <button class="btn btn-warning" onclick="submitAttEdit()">Save Edit</button>
+    </div>
+  </div>
+</div>
+
+<!-- Force clockout -->
+<div id="m-fco" class="overlay" style="display:none;">
+  <div class="modal">
+    <div class="modal-title">Force Clock-Out</div>
+    <div class="modal-sub" id="m-fco-name"></div>
+    <div class="form-group"><label class="form-label">Reason</label><textarea class="form-textarea" id="m-fco-reason" placeholder="Device failure, end of shift…"></textarea></div>
+    <div id="m-fco-msg"></div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('m-fco')">Cancel</button>
+      <button class="btn btn-danger" onclick="submitFco()">Force Clock-Out</button>
+    </div>
+  </div>
+</div>
+
+<!-- Set pay rate -->
+<div id="m-pay" class="overlay" style="display:none;">
+  <div class="modal">
+    <div class="modal-title">Set Pay Rate</div>
+    <div class="modal-sub" id="m-pay-name">—</div>
+    <div class="form-group"><label class="form-label">Daily Rate (KES)</label><input class="form-input" id="m-pay-rate" type="number" min="1" max="50000" placeholder="1500"/></div>
+    <p style="font-size:12px;color:var(--muted);">Max KES 50,000/day. Changes >3× trigger a security flag.</p>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('m-pay')">Cancel</button>
+      <button class="btn btn-primary" onclick="submitPayRate()">Set Rate</button>
+    </div>
+  </div>
+</div>
+
+<!-- Promote to supervisor (branch required) -->
+<div id="m-promote-sup" class="overlay" style="display:none;">
+  <div class="modal">
+    <div class="modal-title">Promote to Supervisor</div>
+    <div class="modal-sub" id="m-promote-sup-name">—</div>
+    <div id="m-promote-sup-msg"></div>
+    <div class="form-group"><label class="form-label">Branch</label><select class="form-select" id="m-promote-sup-branch"></select></div>
+    <p style="font-size:12px;color:var(--muted);">Supervisors must be linked to a branch they manage.</p>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-ghost" onclick="closeModal('m-promote-sup')">Cancel</button>
+      <button type="button" class="btn btn-role" onclick="submitPromoteSupervisor()">Confirm promotion</button>
+    </div>
+  </div>
+</div>
+
+<!-- Contract acceptance (contract-type staff) -->
+<div id="m-contract" class="overlay" style="display:none;">
+  <div class="modal" style="max-width:520px;">
+    <div class="modal-title">Employment contract</div>
+    <div class="modal-sub">Read and accept to enable clock-in (you must still be within your branch geofence).</div>
+    <div id="m-contract-msg"></div>
+    <input type="hidden" id="m-contract-id"/>
+    <div id="m-contract-scroll" class="form-group"></div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-ghost" onclick="closeModal('m-contract')">Later</button>
+      <button type="button" class="btn btn-success" onclick="acceptStaffContract()">I accept</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ════════════════════════════════════════════════════════════════
+//  GLOBALS
+// ════════════════════════════════════════════════════════════════
+const API = '/api';
+let TOKEN = localStorage.getItem('wms_token') || '';
+let ME = null;          // current user object
+let GPS = null;         // {lat, lon}
+let BRANCHES = [];
+let STAFF_LIST = [];    // branch staff for supervisor/admin
+let PENDING_DELETE_ID = null;
+let PENDING_REJECT_ID = null;
+let PENDING_ATT_ID = null;
+let PENDING_FCO_ID = null;
+let PENDING_PAY_ID = null;
+let PROMOTE_USER_ID = null;
+
+// ── Helpers ──────────────────────────────────────────────────────
+const $  = id => document.getElementById(id);
+const ft = d => d ? new Date(d).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) : '—';
+const fd = d => d ? new Date(d).toLocaleDateString('en-KE',{day:'2-digit',month:'short',year:'numeric'}) : '—';
+const fdt= d => d ? new Date(d).toLocaleString('en-KE',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}) : '—';
+const fkes=n => 'KES '+Number(n).toLocaleString('en-KE');
+const today = () => new Date().toISOString().slice(0,10);
+
+function flash(elId, msg, type='error') {
+  const el = $(elId);
+  if(!el) return;
+  el.innerHTML = `<div class="msg msg-${type}">${msg}</div>`;
+  setTimeout(()=>{ if(el) el.innerHTML=''; }, 6000);
+}
+
+function apiPath(p) {
+  const s = String(p);
+  return s.startsWith('/') ? s : '/' + s;
+}
+async function api(method, path, body=null) {
+  const url = `${API}${apiPath(path)}`;
+  const h = { 'Authorization': `Bearer ${TOKEN}` };
+  if(body) h['Content-Type'] = 'application/json';
+  const r = await fetch(url, {
+    method,
+    headers: h,
+    body: body ? JSON.stringify(body) : null,
+    credentials: 'include',
+  });
+  const text = await r.text();
+  let j = {};
+  if (text) {
+    try {
+      j = JSON.parse(text);
+    } catch {
+      if (!r.ok) throw new Error(text.slice(0, 200) || 'Request failed');
+      throw new Error('Invalid response from server');
+    }
+  }
+  if (!r.ok) throw new Error(j.message || 'Request failed');
+  return j;
+}
+
+function openModal(id) { $(id).style.display='flex'; }
+function closeModal(id) { $(id).style.display='none'; }
+
+// ── GPS ──────────────────────────────────────────────────────────
+function initGPS(cb) {
+  if(!navigator.geolocation) { cb && cb(false); return; }
+  navigator.geolocation.watchPosition(
+    pos => { GPS = {lat: pos.coords.latitude, lon: pos.coords.longitude}; cb && cb(true); cb=null; },
+    ()  => { cb && cb(false); cb=null; },
+    { enableHighAccuracy: true, maximumAge: 30000 }
+  );
+}
+
+// ════════════════════════════════════════════════════════════════
+//  AUTH
+// ════════════════════════════════════════════════════════════════
+function showAuthLoader() {
+  const lo = $('loader-overlay');
+  lo.classList.add('active');
+  $('loader-clock').style.display = 'block';
+  const msgs = ['Syncing Workforce Data...', 'Clocking You In...'];
+  let i = 0;
+  $('loader-text').textContent = msgs[0];
+  if (window._loaderInt) clearInterval(window._loaderInt);
+  window._loaderInt = setInterval(() => {
+    i += 1;
+    $('loader-text').textContent = msgs[i % msgs.length];
+  }, 1400);
+}
+function hideAuthLoader() {
+  if (window._loaderInt) clearInterval(window._loaderInt);
+  $('loader-overlay').classList.remove('active');
+}
+
+async function doLogin() {
+  const email = $('l-email').value.trim();
+  const pass  = $('l-pass').value;
+  if(!email||!pass) { flash('login-msg','Email and password required.'); return; }
+  showAuthLoader();
+  try {
+    const res = await fetch(`${API}/auth/login`, {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      credentials:'include',
+      body: JSON.stringify({email, password: pass})
+    });
+    let j;
+    try { j = await res.json(); } catch (_) { throw new Error('Server returned an invalid response. Use http://localhost:5000/ (not opening the file directly).'); }
+    if(!res.ok) throw new Error(j.message || 'Login failed');
+    TOKEN = j.access_token || j.token;
+    localStorage.setItem('wms_token', TOKEN);
+    ME = j.data;
+    hideAuthLoader();
+    if(j.data?.new_device_warning) flash('login-msg','New device detected. This login has been logged.','warning');
+    $('stage-auth').style.display = 'none';
+    $('stage-landing').style.display = 'none';
+    initShell();
+  } catch(e) {
+    hideAuthLoader();
+    flash('login-msg', e.message);
+  }
+}
+
+async function doLogout() {
+  try { if (TOKEN) await api('POST','/auth/logout'); } catch (_) {}
+  TOKEN=''; ME=null; localStorage.removeItem('wms_token');
+  $('app-shell').style.display='none';
+  hideAuthLoader();
+  if (window._branchLeafletMap) {
+    try { window._branchLeafletMap.remove(); } catch (_) {}
+    window._branchLeafletMap = null;
+    window._branchMarker = null;
+  }
+  openAuth('login');
+}
+
+function escHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s == null ? '' : String(s);
+  return d.innerHTML;
+}
+
+async function checkStaffContractGate() {
+  try {
+    const res = await api('GET','/contracts/me');
+    const pending = res.data && res.data.pending_contract;
+    const st = res.data && res.data.staff_type;
+    if (st !== 'contract' || !pending) return;
+    $('m-contract-scroll').textContent = pending.contract_text || '';
+    $('m-contract-id').value = pending._id;
+    if ($('m-contract-msg')) $('m-contract-msg').innerHTML = '';
+    openModal('m-contract');
+  } catch (e) {}
+}
+
+async function acceptStaffContract() {
+  const id = $('m-contract-id').value;
+  try {
+    await api('POST','/contracts/me/accept',{ contract_id: id });
+    closeModal('m-contract');
+    flash('clock-msg','Contract accepted. You may clock in when within your branch area.','success');
+  } catch (e) { flash('m-contract-msg', e.message); }
+}
+
+function openPendingContractModal() { checkStaffContractGate(); }
+
+function showLanding() {
+  $('stage-auth').style.display = 'none';
+  $('stage-landing').style.display = 'flex';
+  document.body.className = '';
+  loadLandingStats();
+}
+
+function openAuth(tab) {
+  $('stage-landing').style.display = 'none';
+  $('stage-auth').style.display = 'flex';
+  switchAuthTab(tab || 'login');
+  $('l-email')?.focus();
+}
+
+function switchAuthTab(tab) {
+  const login = tab === 'login';
+  $('tab-login').classList.toggle('active', login);
+  $('tab-signup').classList.toggle('active', !login);
+  $('auth-panel-login').classList.toggle('active', login);
+  $('auth-panel-signup').classList.toggle('active', !login);
+  const ti = $('auth-page-title');
+  const de = $('auth-page-desc');
+  if (ti) ti.textContent = login ? 'Sign in' : 'Request access';
+  if (de) {
+    de.textContent = login
+      ? 'Enter your work email and password to open your dashboard.'
+      : 'Tell us who you are. Your administrator creates YPPEOPLE accounts — we’ll confirm next steps after you submit.';
+  }
+  if (login) $('l-email')?.focus();
+  else $('su-name')?.focus();
+}
+
+function submitSignupIntent() {
+  const name = $('su-name').value.trim();
+  const email = $('su-email').value.trim();
+  const role = $('su-role').value;
+  const p1 = $('su-pass').value;
+  const p2 = $('su-pass2').value;
+  if (!name || !email || !role || !p1 || !p2) {
+    flash('signup-msg', 'Please complete all fields.');
+    return;
+  }
+  if (p1 !== p2) {
+    flash('signup-msg', 'Passwords do not match.');
+    return;
+  }
+  flash('signup-msg', 'Accounts are created by your administrator. Contact HR with your email to complete onboarding.', 'success');
+}
+
+function ripple(ev) {
+  const btn = ev.currentTarget;
+  if (!btn || !btn.getBoundingClientRect) return;
+  const c = document.createElement('span');
+  const d = Math.max(btn.offsetWidth, btn.offsetHeight);
+  c.style.width = c.style.height = d + 'px';
+  c.className = 'ripple';
+  const rect = btn.getBoundingClientRect();
+  c.style.left = (ev.clientX - rect.left - d / 2) + 'px';
+  c.style.top = (ev.clientY - rect.top - d / 2) + 'px';
+  btn.appendChild(c);
+  setTimeout(() => c.remove(), 600);
+}
+
+const HERO_STATS_SUFFIX = ' · Secure · Geofenced';
+
+async function loadLandingStats() {
+  const el = $('hero-stats');
+  if (!el) return;
+  try {
+    const r = await fetch(`${API}/public/landing-stats`, { credentials: 'include' });
+    const j = await r.json();
+    if (!j.success || typeof j.data?.clocked_in_today !== 'number') throw new Error('bad stats');
+    const n = j.data.clocked_in_today;
+    const label = n === 1 ? 'employee' : 'employees';
+    el.textContent = `${n.toLocaleString('en-US')} ${label} clocked in today${HERO_STATS_SUFFIX}`;
+  } catch (e) {
+    el.textContent = `Could not load today's attendance${HERO_STATS_SUFFIX}`;
+  }
+}
+
+function bindLandingAndChrome() {
+  $('btn-hero-login')?.addEventListener('click', (e) => { ripple(e); openAuth('login'); });
+  $('btn-hero-start')?.addEventListener('click', (e) => { ripple(e); openAuth('signup'); });
+  $('btn-auth-back')?.addEventListener('click', () => showLanding());
+  $('tab-login')?.addEventListener('click', () => switchAuthTab('login'));
+  $('tab-signup')?.addEventListener('click', () => switchAuthTab('signup'));
+  $('btn-forgot-pass')?.addEventListener('click', () =>
+    flash('login-msg', 'Contact your administrator to reset your password.', 'info'));
+  $('btn-do-login')?.addEventListener('click', (e) => { ripple(e); doLogin(); });
+  $('l-pass')?.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') doLogin(); });
+  $('btn-signup-submit')?.addEventListener('click', () => submitSignupIntent());
+  $('nav-toggle')?.addEventListener('click', () => toggleSidebar());
+  $('sidebar-backdrop')?.addEventListener('click', () => closeSidebar());
+  const so = $('btn-signout');
+  if (so) {
+    so.addEventListener('click', () => doLogout());
+    so.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); doLogout(); }
+    });
+  }
+  document.addEventListener('click', (ev) => {
+    const item = ev.target.closest('#nav-menu .nav-item[data-view]');
+    if (!item) return;
+    ev.preventDefault();
+    showView(item.getAttribute('data-view'), item);
+  });
+  document.addEventListener('keydown', (ev) => {
+    const item = ev.target.closest('#nav-menu .nav-item[data-view]');
+    if (!item || (ev.key !== 'Enter' && ev.key !== ' ')) return;
+    ev.preventDefault();
+    showView(item.getAttribute('data-view'), item);
+  });
+}
+bindLandingAndChrome();
+
+// ════════════════════════════════════════════════════════════════
+//  SHELL BUILDER — renders based on role
+// ════════════════════════════════════════════════════════════════
+async function initShell() {
+  closeSidebar();
+  $('stage-landing').style.display='none';
+  $('stage-auth').style.display='none';
+  $('app-shell').style.display='flex';
+
+  // Apply role theme
+  document.body.className = `role-${ME.role}`;
+
+  // Sidebar user card
+  const initials = ME.name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
+  $('sb-avatar').textContent = initials;
+  $('sb-name').textContent = ME.name;
+  $('sb-role-pill').textContent = ME.role.toUpperCase();
+
+  BRANCHES = [];
+  if (ME.role === 'admin') {
+    try { const br = await api('GET','/admin/branches'); BRANCHES = br.data || []; } catch(e) {}
+  }
+
+  if(ME.role==='admin')      buildAdminShell();
+  else if(ME.role==='supervisor') buildSupervisorShell();
+  else { buildStaffShell(); setTimeout(() => checkStaffContractGate(), 500); }
+
+  // GPS for all roles
+  initGPS(()=>{});
+
+  // Auto token-refresh every 13 min
+  startRefresh();
+  connectRealtime();
+}
+
+function connectRealtime() {
+  if (typeof io === 'undefined' || !TOKEN) return;
+  try {
+    if (window._wmsSocket) { try { window._wmsSocket.disconnect(); } catch (_) {} window._wmsSocket = null; }
+    const socket = io({ path: '/socket.io/', auth: { token: TOKEN }, transports: ['websocket', 'polling'] });
+    window._wmsSocket = socket;
+    socket.on('attendance:changed', () => {
+      if (!ME) return;
+      if (ME.role === 'admin') {
+        if (typeof loadAdminAnalytics === 'function') loadAdminAnalytics();
+        if (typeof loadAdminDash === 'function') loadAdminDash();
+      }
+      if (ME.role === 'supervisor') {
+        if (typeof loadSvDash === 'function') loadSvDash();
+        if (typeof loadSvAtt === 'function') loadSvAtt();
+      }
+    });
+  } catch (_) {}
+}
+
+// ── Sidebar builder ───────────────────────────────────────────────
+function buildNav(sections) {
+  $('nav-menu').innerHTML = sections.map(s =>
+    s.divider ? `<div class="nav-section">${s.label}</div>`
+    : `<div class="nav-item" data-view="${s.view}" role="button" tabindex="0">
+         <span class="nav-icon">${s.icon}</span>${s.label}
+         ${s.badge ? `<span class="nav-badge" id="nb-${s.badge}">0</span>` : ''}
+       </div>`
+  ).join('');
+}
+
+function toggleSidebar() {
+  const sb = $('sidebar');
+  const bd = $('sidebar-backdrop');
+  if (!sb || !bd) return;
+  const open = !sb.classList.contains('sidebar-open');
+  sb.classList.toggle('sidebar-open', open);
+  bd.classList.toggle('show', open);
+  bd.setAttribute('aria-hidden', open ? 'false' : 'true');
+}
+
+function closeSidebar() {
+  const sb = $('sidebar');
+  const bd = $('sidebar-backdrop');
+  if (sb) sb.classList.remove('sidebar-open');
+  if (bd) { bd.classList.remove('show'); bd.setAttribute('aria-hidden', 'true'); }
+}
+
+function showView(name, el) {
+  closeSidebar();
+  document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
+  const view = $(`view-${name}`);
+  if(view) view.classList.add('active');
+  if(el) el.classList.add('active');
+}
+
+// ════════════════════════════════════════════════════════════════
+//  STAFF SHELL
+// ════════════════════════════════════════════════════════════════
+function buildStaffShell() {
+  $('sb-branch').textContent = 'Staff';
+  buildNav([
+    {divider:true, label:'My Portal'},
+    {view:'s-dash',    icon:'⊞', label:'Dashboard', badge:'notifs'},
+    {view:'s-clock',   icon:'◷', label:'Attendance'},
+    {view:'s-shifts',  icon:'📆', label:'My Shifts'},
+    {view:'s-leave',   icon:'📋',label:'Leave'},
+    {view:'s-pay',     icon:'💳',label:'Pay Summary'},
+    {view:'s-uniform', icon:'👕',label:'Uniform'},
+    {view:'s-notifs',  icon:'🔔',label:'Notifications'},
+    {view:'s-profile', icon:'👤',label:'Profile'},
+  ]);
+
+  $('main-area').innerHTML = `
+    ${staffDashView()}
+    ${staffClockView()}
+    ${staffShiftsView()}
+    ${staffLeaveView()}
+    ${staffPayView()}
+    ${staffUniformView()}
+    ${staffNotifsView()}
+    ${staffProfileView()}
+  `;
+
+  // Activate first view
+  showView('s-dash', document.querySelector('.nav-item'));
+  loadStaffDash();
+  startLiveClock();
+}
+
+// ─ Staff: Dashboard ──────────────────────────────────────────────
+function staffDashView() {
+  return `<div id="view-s-dash" class="view">
+    <div class="page-head">
+      <div><div class="page-title">Dashboard</div><div class="page-sub" id="s-date">—</div></div>
+    </div>
+    <div class="page-body">
+      <div class="clock-panel">
+        <div class="clock-face" id="live-clock">00:00:00</div>
+        <div id="gps-chip" class="gps-chip gps-wait">⏳ Locating GPS…</div>
+        <div class="clock-status cs-out" id="clock-status">
+          <span class="cs-dot dot-out" id="cs-dot"></span>
+          <span id="cs-label">Not Clocked In</span>
+        </div>
+        <div style="font-size:12px;color:var(--muted);" id="shift-today-hint">Loading today’s shift…</div>
+        <div style="display:flex;gap:12px;">
+          <button class="btn btn-success" id="btn-in"  style="font-size:13px;padding:10px 24px;" onclick="doClock('in')">Clock In</button>
+          <button class="btn btn-danger"  id="btn-out" style="font-size:13px;padding:10px 24px;display:none;" onclick="doClock('out')">Clock Out</button>
+        </div>
+        <div id="clock-msg" style="font-size:13px;min-height:16px;"></div>
+      </div>
+      <div class="stat-grid" id="s-stats"><div class="spinner"></div></div>
+      <div class="g2">
+        <div class="card"><div class="card-head">Leave Balances</div><div id="s-leave-bars"><div class="spinner"></div></div></div>
+        <div class="card"><div class="card-head">Recent Notifications</div><div id="s-recent-notifs"><div class="spinner"></div></div></div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function startLiveClock() {
+  setInterval(()=>{
+    const n = new Date();
+    const el = $('live-clock'); if(el) el.textContent = n.toLocaleTimeString();
+    const ds = $('s-date'); if(ds) ds.textContent = n.toLocaleDateString('en-KE',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
+  },1000);
+
+  // GPS chip updater
+  setInterval(()=>{
+    const chip = $('gps-chip'); if(!chip) return;
+    if(GPS) {
+      chip.className='gps-chip gps-ok';
+      chip.textContent=`✓ GPS ${GPS.lat.toFixed(4)}, ${GPS.lon.toFixed(4)}`;
+    }
+  },3000);
+}
+
+async function loadStaffDash() {
+  try {
+    const res = await api('GET','/staff/dashboard');
+    const d = res.data;
+    ME.name = d.staff.name;
+
+    // Stats
+    const s = d.month_summary;
+    $('s-stats').innerHTML = `
+      <div class="stat"><div class="stat-lbl">Days Worked</div><div class="stat-val va">${s.days_worked}</div><div class="stat-hint">This month</div></div>
+      <div class="stat"><div class="stat-lbl">Pay Rate</div><div class="stat-val">${fkes(s.pay_rate)}</div><div class="stat-hint">Per day</div></div>
+      <div class="stat"><div class="stat-lbl">Est. Pay</div><div class="stat-val vs">${fkes(s.estimated_pay)}</div><div class="stat-hint">Before deductions</div></div>
+      <div class="stat"><div class="stat-lbl">Unread</div><div class="stat-val vw">${d.notifications.unread_count}</div><div class="stat-hint">Notifications</div></div>`;
+
+    // Notification badge
+    if(d.notifications.unread_count>0) {
+      const nb=$('nb-notifs'); if(nb){nb.textContent=d.notifications.unread_count;nb.style.display='inline-block';}
+    }
+
+    // Leave bars
+    const lb = d.leave_balances;
+    const maxA = Math.max(lb.annual,21);
+    $('s-leave-bars').innerHTML = `
+      ${leavebar('Annual Leave',lb.annual.toFixed(1)+' days',lb.annual/maxA*100,'var(--accent)')}
+      ${leavebar('Sick Full Pay',lb.sick_full_remaining+'/7 days',lb.sick_full_remaining/7*100,'var(--success)')}
+      ${leavebar('Sick Half Pay',lb.sick_half_remaining+'/7 days',lb.sick_half_remaining/7*100,'var(--warning)')}`;
+
+    // Recent notifs
+    const ns = d.notifications.latest;
+    $('s-recent-notifs').innerHTML = ns.length===0
+      ? '<p class="empty">No unread notifications.</p>'
+      : ns.map(n=>`<div class="notif-row">
+          <div class="notif-dot nd-unread"></div>
+          <div><div style="font-size:13px;">${n.message}</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">${fd(n.createdAt)}</div></div>
+        </div>`).join('');
+
+    // Clock status
+    if(d.today.clocked_in && !d.today.clocked_out) setClockUI('in');
+    else if(d.today.clocked_out) setClockUI('done');
+
+    const td = new Date().toISOString().slice(0, 10);
+    try {
+      const sh = await api('GET', `/shift/my?from=${td}&to=${td}`);
+      const hint = $('shift-today-hint');
+      if (hint) {
+        if (sh.data?.length) {
+          const x = sh.data[0];
+          const win = (ME && ME.branch_id && (ME.branch_id.clock_in_window_minutes !== undefined))
+            ? Number(ME.branch_id.clock_in_window_minutes)
+            : 60;
+          hint.textContent = `Today's shift: ${x.start_time} – ${x.end_time}. Clock-in allowed from ${x.start_time} for ${win} minute(s).`;
+        } else {
+          hint.textContent = 'No shift scheduled today — clock-in requires a scheduled shift.';
+        }
+      }
+    } catch (_) { /* non-fatal */ }
+
+  } catch(e) { $('s-stats').innerHTML=`<p style="color:var(--danger);">${e.message}</p>`; }
+}
+
+function leavebar(label,value,pct,color) {
+  return `<div style="margin-bottom:12px;">
+    <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px;">
+      <span>${label}</span><span style="font-weight:700;">${value}</span>
+    </div>
+    <div class="leave-bar"><div class="leave-fill" style="width:${Math.min(100,pct)}%;background:${color};"></div></div>
+  </div>`;
+}
+
+function setClockUI(state) {
+  const st=$('clock-status'),dot=$('cs-dot'),lbl=$('cs-label'),bi=$('btn-in'),bo=$('btn-out');
+  if(!st) return;
+  if(state==='in') {
+    st.className='clock-status cs-in'; dot.className='cs-dot dot-in'; lbl.textContent='Clocked In';
+    bi.style.display='none'; bo.style.display='inline-flex';
+  } else if(state==='done') {
+    st.className='clock-status cs-out'; dot.className='cs-dot dot-out'; lbl.textContent='Shift Complete';
+    bi.style.display='none'; bo.style.display='none';
+  } else {
+    st.className='clock-status cs-out'; dot.className='cs-dot dot-out'; lbl.textContent='Not Clocked In';
+    bi.style.display='inline-flex'; bo.style.display='none';
+  }
+}
+
+async function doClock(dir) {
+  if(!GPS) { $('clock-msg').innerHTML='<span style="color:var(--danger)">GPS unavailable — enable location access.</span>'; return; }
+  const btn = dir==='in' ? $('btn-in') : $('btn-out');
+  btn.disabled=true;
+  $('clock-msg').textContent='Processing…';
+  try {
+    const res = await api('POST',`/attendance/clock-${dir}`,{latitude:GPS.lat,longitude:GPS.lon});
+    $('clock-msg').innerHTML=`<span style="color:var(--success)">${res.message}</span>`;
+    setClockUI(dir==='in'?'in':'done');
+    loadStaffDash();
+  } catch(e) {
+    $('clock-msg').innerHTML=`<span style="color:var(--danger)">${e.message}</span>`;
+    btn.disabled=false;
+  }
+}
+
+// ─ Staff: Attendance view ─────────────────────────────────────────
+function staffClockView() {
+  const now = new Date();
+  return `<div id="view-s-clock" class="view">
+    <div class="page-head">
+      <div><div class="page-title">Attendance History</div><div class="page-sub">Your monthly clock-in/out records</div></div>
+      <div style="display:flex;gap:8px;">
+        <select class="form-select" id="ah-month" style="width:120px;" onchange="loadAttHistory()">
+          ${Array.from({length:12},(_,i)=>`<option value="${i+1}"${i===now.getMonth()?' selected':''}>${new Date(0,i).toLocaleString('default',{month:'long'})}</option>`).join('')}
+        </select>
+        <select class="form-select" id="ah-year" style="width:90px;" onchange="loadAttHistory()">
+          ${[now.getFullYear(),now.getFullYear()-1].map(y=>`<option value="${y}">${y}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    <div class="page-body">
+      <div class="stat-grid" id="ah-stats"></div>
+      <div class="card"><div class="card-head">Daily Records</div><div id="ah-table"><div class="spinner"></div></div></div>
+    </div>
+  </div>`;
+}
+
+async function loadAttHistory() {
+  const m=$('ah-month')?.value||new Date().getMonth()+1;
+  const y=$('ah-year')?.value||new Date().getFullYear();
+  try {
+    const res = await api('GET',`/attendance/history?month=${m}&year=${y}`);
+    const s=res.summary;
+    $('ah-stats').innerHTML=`
+      <div class="stat"><div class="stat-lbl">Total</div><div class="stat-val va">${s.total_days}</div></div>
+      <div class="stat"><div class="stat-lbl">Present</div><div class="stat-val vs">${s.present}</div></div>
+      <div class="stat"><div class="stat-lbl">Late</div><div class="stat-val vw">${s.late}</div></div>
+      <div class="stat"><div class="stat-lbl">On Leave</div><div class="stat-val vi">${s.on_leave}</div></div>`;
+    const bm={present:'b-present',late:'b-late',absent:'b-absent',leave:'b-leave',forced:'b-forced',supervisor_assisted:'b-forced'};
+    $('ah-table').innerHTML = res.data.length===0 ? '<p class="empty">No records this period.</p>'
+      : `<table class="tbl"><thead><tr><th>Date</th><th>In</th><th>Out</th><th>Status</th><th>Notes</th></tr></thead>
+         <tbody>${res.data.map(r=>`<tr>
+           <td>${fd(r.date)}</td>
+           <td>${ft(r.clock_in)}</td>
+           <td>${ft(r.clock_out)}${r.auto_clocked_out?' <span class="tag">auto</span>':''}</td>
+           <td><span class="badge ${bm[r.status]||''}">${r.status.replace(/_/g,' ')}</span></td>
+           <td style="color:var(--muted);">${r.notes||'—'}</td>
+         </tr>`).join('')}</tbody></table>`;
+  } catch(e) { $('ah-table').innerHTML=`<p style="color:var(--danger);">${e.message}</p>`; }
+}
+
+function staffShiftsView() {
+  const n = new Date();
+  return `<div id="view-s-shifts" class="view">
+    <div class="page-head">
+      <div><div class="page-title">My Shifts</div><div class="page-sub">Assigned schedule (9-hour shifts)</div></div>
+      <button type="button" class="btn btn-ghost" onclick="loadStaffShifts()">↺ Refresh</button>
+    </div>
+    <div class="page-body">
+      <div class="card"><div id="s-shifts-body"><div class="spinner"></div></div></div>
+    </div>
+  </div>`;
+}
+
+async function loadStaffShifts() {
+  const el = $('s-shifts-body');
+  if (!el) return;
+  try {
+    const from = new Date();
+    from.setDate(from.getDate() - 7);
+    const to = new Date();
+    to.setDate(to.getDate() + 42);
+    const fromS = from.toISOString().slice(0, 10);
+    const toS = to.toISOString().slice(0, 10);
+    const res = await api('GET', `/shift/my?from=${fromS}&to=${toS}`);
+    if (!res.data.length) {
+      el.innerHTML = '<p class="empty">No shifts in this range.</p>';
+      return;
+    }
+    el.innerHTML = `<table class="tbl"><thead><tr><th>Date</th><th>Start</th><th>End</th><th>Branch</th></tr></thead><tbody>${res.data.map((r) => `<tr>
+      <td>${r.shift_date}</td>
+      <td>${r.start_time}</td>
+      <td>${r.end_time}${r.end_next_day ? ' <span class="tag">+1</span>' : ''}</td>
+      <td style="font-size:12px;">${r.branch_id?.name || '—'}</td>
+    </tr>`).join('')}</tbody></table>`;
+  } catch (e) {
+    el.innerHTML = `<p style="color:var(--danger);">${e.message}</p>`;
+  }
+}
+
+// ─ Staff: Leave ───────────────────────────────────────────────────
+function staffLeaveView() {
+  const td = new Date().toISOString().split('T')[0];
+  return `<div id="view-s-leave" class="view">
+    <div class="page-head"><div><div class="page-title">Leave Management</div><div class="page-sub">Request and track your leave</div></div></div>
+    <div class="page-body">
+      <div class="g2" style="margin-bottom:20px;">
+        <div class="card">
+          <div class="card-head">Request Leave</div>
+          <div id="lreq-msg"></div>
+          <div class="form-group"><label class="form-label">Leave Type</label>
+            <select class="form-select" id="lr-type">
+              <option value="annual">Annual Leave</option>
+              <option value="sick_full">Sick Leave (Full Pay)</option>
+              <option value="sick_half">Sick Leave (Half Pay)</option>
+            </select>
+          </div>
+          <div class="g2">
+            <div class="form-group"><label class="form-label">Start Date</label><input class="form-input" type="date" id="lr-start" min="${td}"/></div>
+            <div class="form-group"><label class="form-label">End Date</label><input class="form-input" type="date" id="lr-end" min="${td}"/></div>
+          </div>
+          <button class="btn btn-role" style="width:100%;" onclick="doRequestLeave()">Submit Request</button>
+        </div>
+        <div class="card"><div class="card-head">Current Balance</div><div id="l-balance"><div class="spinner"></div></div></div>
+      </div>
+      <div class="card"><div class="card-head">Leave History</div><div id="l-history"><div class="spinner"></div></div></div>
+      <div class="card" style="margin-top:16px;">
+        <div class="card-head">Upload Medical Document</div>
+        <p style="font-size:13px;color:var(--muted);margin-bottom:14px;">Required for sick leave approval. Upload after returning.</p>
+        <div id="doc-msg"></div>
+        <div class="g2">
+          <div class="form-group"><label class="form-label">Leave Request ID</label><input class="form-input" id="doc-lid" placeholder="Paste leave ID"/></div>
+          <div class="form-group"><label class="form-label">Document (PDF/Image, max 5MB)</label><input class="form-input" type="file" id="doc-file" accept=".pdf,.jpg,.jpeg,.png" style="padding:8px;"/></div>
+        </div>
+        <button class="btn btn-primary" onclick="doUploadDoc()">Upload Document</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function loadLeaveData() {
+  try {
+    const [bal,hist] = await Promise.all([api('GET','/leave/balance'), api('GET','/leave/history')]);
+    const d=bal.data;
+    $('l-balance').innerHTML=`
+      <div style="margin-bottom:12px;">
+        <div style="font-size:12px;color:var(--muted);">Annual Leave</div>
+        <div style="font-size:24px;font-weight:800;color:var(--accent);">${d.annual.balance.toFixed(1)}<span style="font-size:13px;font-weight:400;color:var(--muted);"> / ${d.annual.total_accrued.toFixed(1)} accrued</span></div>
+      </div>
+      <hr class="divider"/>
+      <div style="margin-bottom:8px;">
+        <div style="font-size:12px;color:var(--muted);">Sick (Full Pay)</div>
+        <div style="font-size:16px;font-weight:700;color:var(--success);">${d.sick.full_pay.remaining} / 7 days</div>
+        ${!d.sick.eligible?'<div style="font-size:11px;color:var(--warning);">⚠ Eligible after 2 months service</div>':''}
+      </div>
+      <div>
+        <div style="font-size:12px;color:var(--muted);">Sick (Half Pay)</div>
+        <div style="font-size:16px;font-weight:700;color:var(--warning);">${d.sick.half_pay.remaining} / 7 days</div>
+      </div>`;
+    const sc={pending:'b-pending',pending_document:'b-pdoc',approved:'b-approved',rejected:'b-rejected',cancelled:'b-inactive'};
+    $('l-history').innerHTML = hist.data.length===0 ? '<p class="empty">No leave requests yet.</p>'
+      : `<table class="tbl"><thead><tr><th>Type</th><th>Start</th><th>End</th><th>Days</th><th>Status</th></tr></thead>
+         <tbody>${hist.data.map(l=>`<tr>
+           <td style="text-transform:capitalize;">${l.type.replace(/_/g,' ')}</td>
+           <td>${fd(l.start_date)}</td><td>${fd(l.end_date)}</td><td>${l.days_requested}</td>
+           <td><span class="badge ${sc[l.status]||''}">${l.status.replace(/_/g,' ')}</span></td>
+         </tr>`).join('')}</tbody></table>`;
+  } catch(e) {}
+}
+
+async function doRequestLeave() {
+  try {
+    const res = await api('POST','/leave/request',{
+      type:$('lr-type').value, start_date:$('lr-start').value, end_date:$('lr-end').value
+    });
+    flash('lreq-msg',res.message,'success');
+    loadLeaveData();
+  } catch(e) { flash('lreq-msg',e.message); }
+}
+
+async function doUploadDoc() {
+  const lid=$('doc-lid').value.trim(), file=$('doc-file').files[0];
+  if(!lid||!file){flash('doc-msg','Leave ID and file required.');return;}
+  const fd2=new FormData(); fd2.append('leave_id',lid); fd2.append('document',file);
+  try {
+    const res=await fetch(`${API}/leave/upload-document`,{method:'POST',headers:{Authorization:`Bearer ${TOKEN}`},body:fd2});
+    const j=await res.json();
+    if(!res.ok) throw new Error(j.message);
+    flash('doc-msg',j.message,'success'); loadLeaveData();
+  } catch(e){flash('doc-msg',e.message);}
+}
+
+// ─ Staff: Pay / Uniform / Notifications / Profile ─────────────────
+function staffPayView() {
+  return `<div id="view-s-pay" class="view">
+    <div class="page-head"><div><div class="page-title">Pay Summary</div><div class="page-sub">Estimated earnings</div></div></div>
+    <div class="page-body"><div id="pay-content"><div class="spinner"></div></div></div>
+  </div>`;
+}
+async function loadPay() {
+  try {
+    const res=await api('GET','/pay/summary'); const d=res.data;
+    $('pay-content').innerHTML=`
+      <div class="stat-grid">
+        <div class="stat"><div class="stat-lbl">Days Worked</div><div class="stat-val va">${d.days_worked}</div></div>
+        <div class="stat"><div class="stat-lbl">Rate/Day</div><div class="stat-val">${fkes(d.rate_per_day)}</div></div>
+        <div class="stat"><div class="stat-lbl">Est. Pay</div><div class="stat-val vs">${fkes(d.estimated_pay)}</div></div>
+      </div>
+      <div class="card raised">
+        <div class="card-head">Calculation</div>
+        <div style="font-size:18px;font-weight:700;">${d.days_worked} × ${fkes(d.rate_per_day)} = <span style="color:var(--success);">${fkes(d.estimated_pay)}</span></div>
+        <p style="font-size:12px;color:var(--muted);margin-top:8px;">${d.note}</p>
+      </div>`;
+  } catch(e){$('pay-content').innerHTML=`<p style="color:var(--danger);">${e.message}</p>`;}
+}
+
+function staffUniformView() {
+  return `<div id="view-s-uniform" class="view">
+    <div class="page-head"><div><div class="page-title">My Uniform</div></div></div>
+    <div class="page-body"><div class="card"><div id="uniform-content"><div class="spinner"></div></div></div></div>
+  </div>`;
+}
+async function loadUniform() {
+  try {
+    const res=await api('GET','/uniform/my');
+    const icons={shirt:'👕',boots:'👟',trousers:'👖',jacket:'🧥',hat:'🎩'};
+    const sc={active:'vs',returned:'',replacement_pending:'vw',lost:'vd'};
+    $('uniform-content').innerHTML = res.data.length===0 ? '<p class="empty">No uniform items assigned.</p>'
+      : res.data.map(u=>`<div style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-bottom:1px solid var(--border);">
+          <div style="display:flex;align-items:center;gap:12px;">
+            <span style="font-size:22px;">${icons[u.item_type]||'🏷'}</span>
+            <div>
+              <div style="font-weight:700;text-transform:capitalize;">${u.item_type} ${u.size?`(${u.size})`:''}</div>
+              <div style="font-size:11px;color:var(--muted);">Issued ${fd(u.issued_date)}</div>
+            </div>
+          </div>
+          <span class="${sc[u.status]||''}" style="font-size:12px;font-weight:700;text-transform:capitalize;">${u.status.replace(/_/g,' ')}</span>
+        </div>`).join('');
+  } catch(e) {$('uniform-content').innerHTML=`<p style="color:var(--danger);">${e.message}</p>`;}
+}
+
+function staffNotifsView() {
+  return `<div id="view-s-notifs" class="view">
+    <div class="page-head">
+      <div><div class="page-title">Notifications</div></div>
+      <button class="btn btn-ghost" onclick="markAllRead()">Mark All Read</button>
+    </div>
+    <div class="page-body"><div class="card"><div id="notifs-content"><div class="spinner"></div></div></div></div>
+  </div>`;
+}
+async function loadNotifications() {
+  try {
+    const res=await api('GET','/notifications');
+    const icons={info:'ℹ',warning:'⚠',leave:'📋',attendance:'◷',pay:'💳',broadcast:'📢'};
+    $('notifs-content').innerHTML = res.data.length===0 ? '<p class="empty">No notifications.</p>'
+      : res.data.map(n=>`<div class="notif-row" data-id="${n._id}">
+          <div class="notif-dot ${n.is_read?'nd-read':'nd-unread'}"></div>
+          <div style="flex:1;">
+            <div style="font-size:13px;${n.is_read?'color:var(--muted);':''}">${icons[n.type]||'ℹ'} ${n.message}</div>
+            <div style="font-size:11px;color:var(--muted);margin-top:2px;">${fd(n.createdAt)}</div>
+          </div>
+          ${!n.is_read?`<button class="btn btn-ghost btn-sm" onclick="markRead('${n._id}')">Read</button>`:''}
+        </div>`).join('');
+  } catch(e) {$('notifs-content').innerHTML=`<p style="color:var(--danger);">${e.message}</p>`;}
+}
+async function markRead(id){await api('PATCH','/notifications/read',{notification_ids:[id]});loadNotifications();loadStaffDash();}
+async function markAllRead(){await api('PATCH','/notifications/read',{});loadNotifications();loadStaffDash();}
+
+function staffProfileView() {
+  return `<div id="view-s-profile" class="view">
+    <div class="page-head"><div><div class="page-title">My Profile</div></div></div>
+    <div class="page-body">
+      <div class="g2">
+        <div class="card"><div class="card-head">Account Info</div><div id="profile-info"><div class="spinner"></div></div></div>
+        <div class="card">
+          <div class="card-head">Update Contact</div>
+          <div id="profile-msg"></div>
+          <div class="form-group"><label class="form-label">Phone</label><input class="form-input" type="tel" id="p-phone" placeholder="+254 7XX XXX XXX"/></div>
+          <div class="form-group"><label class="form-label">Address</label><input class="form-input" type="text" id="p-addr" placeholder="Your address"/></div>
+          <button class="btn btn-role" onclick="doUpdateProfile()">Save Changes</button>
+          <p style="font-size:11px;color:var(--muted);margin-top:10px;">Role, pay rate, and branch can only be changed by admin.</p>
+          <button type="button" class="signout" style="margin:14px 0 0;width:100%;" onclick="doLogout()">Log out</button>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+async function loadProfile() {
+  try {
+    const res=await api('GET','/profile'); const d=res.data;
+    $('p-phone').value=d.phone||''; $('p-addr').value=d.address||'';
+    let banner = '';
+    if (d.role === 'staff' && d.type === 'contract') {
+      try {
+        const c = await api('GET','/contracts/me');
+        if (c.data && c.data.pending_contract) {
+          banner = `<div class="msg msg-warning" style="margin-bottom:12px;">You have a contract to accept before clock-in is allowed. <button type="button" class="btn btn-sm btn-role" onclick="openPendingContractModal()">Review contract</button></div>`;
+        }
+      } catch (e) {}
+    }
+    const rows=[['Name',d.name],['Staff ID',d.staff_id],['Email',d.email],['Role',d.role],['Type',d.type],['Branch',d.branch_id?.name||'—'],['Join Date',fd(d.join_date)]];
+    $('profile-info').innerHTML=banner+rows.map(([k,v])=>`
+      <div style="display:flex;justify-content:space-between;border-bottom:1px solid var(--border);padding:9px 0;">
+        <span style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px;">${k}</span>
+        <span style="font-size:13px;font-weight:600;">${v||'—'}</span>
+      </div>`).join('');
+  } catch(e){}
+}
+async function doUpdateProfile() {
+  try {
+    const res=await api('PATCH','/profile/update',{phone:$('p-phone').value.trim(),address:$('p-addr').value.trim()});
+    flash('profile-msg',res.message,'success');
+  } catch(e){flash('profile-msg',e.message);}
+}
+
+// ════════════════════════════════════════════════════════════════
+//  SUPERVISOR SHELL  (Staff views + branch management extras)
+// ════════════════════════════════════════════════════════════════
+function buildSupervisorShell() {
+  $('sb-branch').textContent = 'Supervisor';
+  buildNav([
+    {divider:true,label:'My Branch'},
+    {view:'sv-dash',   icon:'⊞',label:'Dashboard'},
+    {view:'sv-att',    icon:'◷',label:'Today\'s Attendance'},
+    {view:'sv-staff',  icon:'👥',label:'Branch Staff'},
+    {view:'sv-leave',  icon:'📋',label:'Leave Requests'},
+    {view:'sv-msg',    icon:'📢',label:'Send Message'},
+    {view:'sv-shifts', icon:'📆',label:'Shifts'},
+    {divider:true,label:'My Account'},
+    {view:'s-dash',    icon:'⊞',label:'My Dashboard'},
+    {view:'s-clock',   icon:'◷',label:'My Attendance'},
+    {view:'s-leave',   icon:'📋',label:'My Leave'},
+    {view:'s-pay',     icon:'💳',label:'My Pay'},
+    {view:'s-uniform', icon:'👕',label:'My Uniform'},
+    {view:'s-notifs',  icon:'🔔',label:'Notifications',badge:'notifs'},
+    {view:'s-profile', icon:'👤',label:'Profile'},
+  ]);
+
+  $('main-area').innerHTML = `
+    ${svDashView()}
+    ${svAttView()}
+    ${svStaffView()}
+    ${svLeaveView()}
+    ${svMsgView()}
+    ${svShiftsView()}
+    ${staffDashView()}
+    ${staffClockView()}
+    ${staffShiftsView()}
+    ${staffLeaveView()}
+    ${staffPayView()}
+    ${staffUniformView()}
+    ${staffNotifsView()}
+    ${staffProfileView()}
+  `;
+
+  const firstSv = document.querySelector('.nav-item[data-view="sv-att"]');
+  showView('sv-att', firstSv || document.querySelector('.nav-item'));
+  loadSvAtt();
+  loadSvStaff();
+  startLiveClock();
+}
+
+function svDashView() {
+  return `<div id="view-sv-dash" class="view">
+    <div class="page-head">
+      <div><div class="page-title">Branch Dashboard</div><div class="page-sub" id="sv-date">—</div></div>
+      <button class="btn btn-ghost" onclick="loadSvDash()">↺ Refresh</button>
+    </div>
+    <div class="page-body">
+      <div class="stat-grid" id="sv-stats"><div class="spinner"></div></div>
+      <div class="g2">
+        <div class="card">
+          <div class="card-head">Manual Clock-In</div>
+          <p style="font-size:12px;color:var(--muted);margin-bottom:12px;">For staff with device or GPS failure.</p>
+          <div id="manual-msg"></div>
+          <div class="form-group"><label class="form-label">Staff Member</label><select class="form-select" id="m-staff-sel"></select></div>
+          <div class="form-group"><label class="form-label">Reason</label><input class="form-input" id="m-reason" placeholder="Device failure, GPS issue…"/></div>
+          <button class="btn btn-role" onclick="doManualIn()">Record Clock-In</button>
+        </div>
+        <div class="card">
+          <div class="card-head">Quick Actions</div>
+          <div style="display:flex;flex-direction:column;gap:10px;">
+            <button class="btn btn-ghost" onclick="showView('sv-att',document.querySelector('[data-view=sv-att]'))">View Today's Attendance →</button>
+            <button class="btn btn-ghost" onclick="showView('sv-leave',document.querySelector('[data-view=sv-leave]'))">Review Leave Requests →</button>
+            <button class="btn btn-ghost" onclick="showView('sv-msg',document.querySelector('[data-view=sv-msg]'))">Send Branch Message →</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function loadSvDash() {
+  try {
+    const res=await api('GET','/supervisor/dashboard');
+    const d=res.data;
+    $('sv-date').textContent=new Date().toLocaleDateString('en-KE',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
+    $('sv-stats').innerHTML=`
+      <div class="stat"><div class="stat-lbl">Branch Staff</div><div class="stat-val vr">${d.total_staff}</div></div>
+      <div class="stat"><div class="stat-lbl">Clocked In</div><div class="stat-val vs">${d.today.clocked_in}</div></div>
+      <div class="stat"><div class="stat-lbl">Clocked Out</div><div class="stat-val">${d.today.clocked_out}</div></div>
+      <div class="stat"><div class="stat-lbl">Absent</div><div class="stat-val vd">${d.today.absent}</div></div>
+      <div class="stat"><div class="stat-lbl">Pending Leave</div><div class="stat-val vw">${d.pending_leave_requests}</div></div>`;
+  } catch(e){$('sv-stats').innerHTML=`<p style="color:var(--danger);">${e.message}</p>`;}
+}
+
+function svAttView() {
+  return `<div id="view-sv-att" class="view">
+    <div class="page-head">
+      <div><div class="page-title">Today's Attendance</div></div>
+      <button class="btn btn-ghost" onclick="loadSvAtt()">↺ Refresh</button>
+    </div>
+    <div class="page-body"><div class="card"><div id="sv-att-content"><div class="spinner"></div></div></div></div>
+  </div>`;
+}
+
+async function loadSvAtt() {
+  $('sv-att-content').innerHTML='<div class="spinner"></div>';
+  try {
+    const res=await api('GET','/supervisor/attendance/today');
+    const bm={present:'b-present',late:'b-late',absent:'b-absent',supervisor_assisted:'b-forced',leave:'b-leave'};
+    $('sv-att-content').innerHTML=`<table class="tbl">
+      <thead><tr><th>Name</th><th>In</th><th>Out</th><th>Status</th><th>Action</th></tr></thead>
+      <tbody>${res.data.map(r=>`<tr>
+        <td style="font-weight:700;">${r.name}</td>
+        <td>${ft(r.attendance?.clock_in)}</td>
+        <td>${ft(r.attendance?.clock_out)}${r.attendance?.auto_clocked_out?' <span class="tag">auto</span>':''}</td>
+        <td><span class="badge ${bm[r.status]||''}">${r.status.replace(/_/g,' ')}</span></td>
+        <td>${r.attendance?.clock_in&&!r.attendance?.clock_out
+          ?`<button class="btn btn-danger btn-sm" onclick="openFco('${r.staff_id}','${r.name}')">Force Out</button>`:'—'}</td>
+      </tr>`).join('')}</tbody></table>`;
+  } catch(e){$('sv-att-content').innerHTML=`<p style="color:var(--danger);">${e.message}</p>`;}
+}
+
+function svStaffView() {
+  return `<div id="view-sv-staff" class="view">
+    <div class="page-head"><div><div class="page-title">Branch Staff</div></div></div>
+    <div class="page-body"><div class="card"><div id="sv-staff-content"><div class="spinner"></div></div></div></div>
+  </div>`;
+}
+
+async function loadSvStaff() {
+  try {
+    const res=await api('GET','/supervisor/staff');
+    STAFF_LIST=res.data;
+    // populate dropdown
+    const opts=STAFF_LIST.map(s=>`<option value="${s._id}">${s.name}</option>`).join('');
+    if($('m-staff-sel')) $('m-staff-sel').innerHTML=`<option value="">Select staff…</option>${opts}`;
+    $('sv-staff-content').innerHTML=res.data.length===0?'<p class="empty">No staff.</p>'
+      :`<table class="tbl"><thead><tr><th>Name</th><th>Staff ID</th><th>Type</th><th>Status</th></tr></thead>
+        <tbody>${res.data.map(s=>`<tr>
+          <td style="font-weight:700;">${s.name}</td>
+          <td style="color:var(--muted);">${s.profile?.staff_id||'—'}</td>
+          <td>${s.profile?.type||'—'}</td>
+          <td><span class="badge ${s.is_active?'b-active':'b-inactive'}">${s.is_active?'Active':'Inactive'}</span></td>
+        </tr>`).join('')}</tbody></table>`;
+  } catch(e){}
+}
+
+function svLeaveView() {
+  return `<div id="view-sv-leave" class="view">
+    <div class="page-head">
+      <div><div class="page-title">Leave Requests</div></div>
+      <select class="form-select" id="sv-lf" style="width:160px;" onchange="loadSvLeave()">
+        <option value="">All statuses</option><option value="pending">Pending</option>
+        <option value="pending_document">Awaiting Doc</option><option value="approved">Approved</option><option value="rejected">Rejected</option>
+      </select>
+    </div>
+    <div class="page-body"><div class="card"><div id="sv-leave-content"><div class="spinner"></div></div></div></div>
+  </div>`;
+}
+
+async function loadSvLeave() {
+  const s=$('sv-lf')?.value||'';
+  try {
+    const res=await api('GET',`/supervisor/leave${s?'?status='+s:''}`);
+    const sc={pending:'b-pending',pending_document:'b-pdoc',approved:'b-approved',rejected:'b-rejected'};
+    $('sv-leave-content').innerHTML=res.data.length===0?'<p class="empty">No requests.</p>'
+      :`<table class="tbl"><thead><tr><th>Staff</th><th>Type</th><th>Dates</th><th>Days</th><th>Status</th><th>Doc</th><th>Actions</th></tr></thead>
+        <tbody>${res.data.map(l=>`<tr>
+          <td style="font-weight:700;">${l.staff_name}</td>
+          <td style="text-transform:capitalize;">${l.type.replace(/_/g,' ')}</td>
+          <td style="white-space:nowrap;font-size:12px;">${fd(l.start_date)} – ${fd(l.end_date)}</td>
+          <td>${l.days_requested}</td>
+          <td><span class="badge ${sc[l.status]||''}">${l.status.replace(/_/g,' ')}</span></td>
+          <td>${l.medical_document?`<a href="/uploads/${l.medical_document}" target="_blank" style="color:var(--accent);">View</a>`:'—'}</td>
+          <td style="display:flex;gap:5px;">
+            ${['pending','pending_document'].includes(l.status)?`
+              <button class="btn btn-success btn-sm" onclick="svApprove('${l._id}')">Approve</button>
+              <button class="btn btn-danger btn-sm" onclick="openReject('${l._id}','sv')">Reject</button>`:'—'}
+          </td>
+        </tr>`).join('')}</tbody></table>`;
+  } catch(e){$('sv-leave-content').innerHTML=`<p style="color:var(--danger);">${e.message}</p>`;}
+}
+
+async function svApprove(id) {
+  if(!confirm('Approve this leave request?')) return;
+  try{await api('PATCH',`/supervisor/leave/${id}/approve`);loadSvLeave();}catch(e){alert(e.message);}
+}
+
+function svMsgView() {
+  return `<div id="view-sv-msg" class="view">
+    <div class="page-head"><div><div class="page-title">Send Message</div></div></div>
+    <div class="page-body">
+      <div class="g2">
+        <div class="card">
+          <div class="card-head">Branch Broadcast</div>
+          <div id="bcast-msg-sv"></div>
+          <div class="form-group"><label class="form-label">Message</label><textarea class="form-textarea" id="sv-bcast" placeholder="Message to all branch staff…"></textarea></div>
+          <button class="btn btn-role" onclick="svBroadcast()">Send to All Branch Staff</button>
+        </div>
+        <div class="card">
+          <div class="card-head">Individual Message</div>
+          <div id="indiv-msg-sv"></div>
+          <div class="form-group"><label class="form-label">Staff Member</label><select class="form-select" id="sv-indiv-staff"><option value="">Select…</option></select></div>
+          <div class="form-group"><label class="form-label">Message</label><textarea class="form-textarea" id="sv-indiv-msg" placeholder="Personal message…"></textarea></div>
+          <button class="btn btn-role" onclick="svIndivMsg()">Send Message</button>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function loadSvMsgDropdown() {
+  const opts=STAFF_LIST.map(s=>`<option value="${s._id}">${s.name}</option>`).join('');
+  if($('sv-indiv-staff')) $('sv-indiv-staff').innerHTML=`<option value="">Select…</option>${opts}`;
+}
+
+async function svBroadcast() {
+  const msg=$('sv-bcast').value.trim();
+  if(!msg){flash('bcast-msg-sv','Message required.');return;}
+  try{const r=await api('POST','/supervisor/notify',{message:msg});flash('bcast-msg-sv',r.message,'success');$('sv-bcast').value='';}catch(e){flash('bcast-msg-sv',e.message);}
+}
+
+async function svIndivMsg() {
+  const id=$('sv-indiv-staff').value, msg=$('sv-indiv-msg').value.trim();
+  if(!id||!msg){flash('indiv-msg-sv','Select staff and enter message.');return;}
+  try{const r=await api('POST','/supervisor/notify',{staff_id:id,message:msg});flash('indiv-msg-sv',r.message,'success');$('sv-indiv-msg').value='';}catch(e){flash('indiv-msg-sv',e.message);}
+}
+
+function svShiftsView() {
+  const n = new Date();
+  return `<div id="view-sv-shifts" class="view">
+    <div class="page-head">
+      <div><div class="page-title">Branch Shifts</div><div class="page-sub">Assign and review shifts for your branch only</div></div>
+      <button type="button" class="btn btn-ghost" onclick="loadSvShifts()">↺ Refresh</button>
+    </div>
+    <div class="page-body">
+      <div class="g2">
+        <div class="card">
+          <div class="card-head">Assign shift</div>
+          <div id="sv-shift-assign-msg"></div>
+          <div class="form-group"><label class="form-label">Staff</label><select class="form-select" id="sv-as-staff"></select></div>
+          <div class="form-group"><label class="form-label">Date</label><input class="form-input" type="date" id="sv-as-date" value="${n.toISOString().slice(0,10)}"/></div>
+          <div class="form-group"><label class="form-label">Start time</label><input class="form-input" id="sv-as-start" value="08:00" placeholder="08:00"/></div>
+          <button type="button" class="btn btn-role" onclick="submitSvShiftAssign()">Assign</button>
+        </div>
+        <div class="card">
+          <div class="card-head">Bulk assign (same branch)</div>
+          <div id="sv-shift-bulk-msg"></div>
+          <div class="form-group"><label class="form-label">Staff (multi-select)</label><select class="form-select" id="sv-as-bulk" multiple size="8" style="min-height:160px;"></select></div>
+          <div class="form-group"><label class="form-label">Date</label><input class="form-input" type="date" id="sv-as-bulk-date" value="${n.toISOString().slice(0,10)}"/></div>
+          <div class="form-group"><label class="form-label">Start time</label><input class="form-input" id="sv-as-bulk-start" value="08:00"/></div>
+          <button type="button" class="btn btn-primary" onclick="submitSvShiftBulk()">Bulk assign</button>
+        </div>
+      </div>
+      <div class="card" style="margin-top:16px;">
+        <div class="card-head">Upcoming shifts</div>
+        <div id="sv-shifts-table"><div class="spinner"></div></div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function fillSvShiftStaffSelects() {
+  const opts = STAFF_LIST.map((s) => `<option value="${s._id}">${escHtml(s.name)}</option>`).join('');
+  const one = $('sv-as-staff');
+  const mul = $('sv-as-bulk');
+  if (one) one.innerHTML = `<option value="">Select…</option>${opts}`;
+  if (mul) mul.innerHTML = opts;
+}
+
+async function loadSvShifts() {
+  const box = $('sv-shifts-table');
+  if (!box) return;
+  fillSvShiftStaffSelects();
+  try {
+    const from = new Date();
+    const to = new Date();
+    to.setDate(to.getDate() + 21);
+    const res = await api(
+      'GET',
+      `/shift/branch?from=${from.toISOString().slice(0, 10)}&to=${to.toISOString().slice(0, 10)}`
+    );
+    if (!res.data.length) {
+      box.innerHTML = '<p class="empty">No shifts in range.</p>';
+      return;
+    }
+    box.innerHTML = `<table class="tbl"><thead><tr><th>Date</th><th>Staff</th><th>Start</th><th>End</th></tr></thead><tbody>${res.data
+      .map(
+        (r) => `<tr>
+      <td>${r.shift_date}</td>
+      <td>${escHtml(r.staff_id?.name || '—')}</td>
+      <td>${r.start_time}</td>
+      <td>${r.end_time}</td>
+    </tr>`
+      )
+      .join('')}</tbody></table>`;
+  } catch (e) {
+    box.innerHTML = `<p style="color:var(--danger);">${e.message}</p>`;
+  }
+}
+
+async function submitSvShiftAssign() {
+  const staff_id = $('sv-as-staff').value;
+  const shift_date = $('sv-as-date').value;
+  const start_time = ($('sv-as-start').value || '').trim();
+  if (!staff_id || !shift_date || !start_time) {
+    flash('sv-shift-assign-msg', 'Fill all fields.');
+    return;
+  }
+  const u = STAFF_LIST.find((x) => x._id === staff_id);
+  const branch_id = u?.branch_id?._id || u?.branch_id;
+  if (!branch_id) {
+    flash('sv-shift-assign-msg', 'Could not resolve branch.');
+    return;
+  }
+  try {
+    await api('POST', '/shift/assign', { staff_id, branch_id, shift_date, start_time });
+    flash('sv-shift-assign-msg', 'Shift assigned.', 'success');
+    loadSvShifts();
+  } catch (e) {
+    flash('sv-shift-assign-msg', e.message);
+  }
+}
+
+async function submitSvShiftBulk() {
+  const sel = $('sv-as-bulk');
+  const shift_date = $('sv-as-bulk-date').value;
+  const start_time = ($('sv-as-bulk-start').value || '').trim();
+  const staff_ids = sel ? Array.from(sel.selectedOptions).map((o) => o.value).filter(Boolean) : [];
+  if (staff_ids.length < 1 || !shift_date || !start_time) {
+    flash('sv-shift-bulk-msg', 'Select at least one staff member and fill date/time.');
+    return;
+  }
+  try {
+    const r = await api('POST', '/shift/bulk-assign', { staff_ids, shift_date, start_time });
+    flash('sv-shift-bulk-msg', r.message, 'success');
+    loadSvShifts();
+  } catch (e) {
+    flash('sv-shift-bulk-msg', e.message);
+  }
+}
+
+async function doManualIn() {
+  const id=$('m-staff-sel').value, reason=$('m-reason').value.trim();
+  if(!id||!reason){flash('manual-msg','Select staff and enter reason.');return;}
+  try{const r=await api('POST','/supervisor/attendance/manual-entry',{staff_id:id,reason});flash('manual-msg',r.message,'success');$('m-reason').value='';}catch(e){flash('manual-msg',e.message);}
+}
+
+function openFco(staffId, name) {
+  PENDING_FCO_ID=staffId;
+  $('m-fco-name').textContent=`Force clock-out for: ${name}`;
+  $('m-fco-reason').value=''; $('m-fco-msg').innerHTML='';
+  openModal('m-fco');
+}
+async function submitFco() {
+  const reason=$('m-fco-reason').value.trim();
+  if(!reason){flash('m-fco-msg','Reason required.');return;}
+  const endpoint=ME.role==='admin'?'/supervisor/attendance/force-clockout':'/supervisor/attendance/force-clockout';
+  try{await api('POST',endpoint,{staff_id:PENDING_FCO_ID,reason});closeModal('m-fco');loadSvAtt&&loadSvAtt();}catch(e){flash('m-fco-msg',e.message);}
+}
+
+// ════════════════════════════════════════════════════════════════
+//  ADMIN SHELL  (everything)
+// ════════════════════════════════════════════════════════════════
+function buildAdminShell() {
+  $('sb-branch').textContent = 'System Administrator';
+  buildNav([
+    {divider:true,label:'Control Center'},
+    {view:'a-dash',    icon:'⊞',label:'Dashboard',badge:'alerts'},
+    {view:'a-analytics',icon:'📈',label:'Workforce analytics'},
+    {view:'a-reports', icon:'📑',label:'Payroll reports'},
+    {view:'a-sec',     icon:'🛡',label:'Security Events'},
+    {view:'a-audit',   icon:'📋',label:'Audit Log'},
+    {view:'a-sessions',icon:'🔐',label:'Active Sessions'},
+    {divider:true,label:'People'},
+    {view:'a-users',   icon:'👥',label:'Users'},
+    {view:'a-create',  icon:'➕',label:'Create User'},
+    {divider:true,label:'Operations'},
+    {view:'a-branches',icon:'🏢',label:'Branches'},
+    {view:'a-shifts',  icon:'📆',label:'Shifts'},
+    {view:'a-att',     icon:'◷',label:'Attendance'},
+    {view:'a-leave',   icon:'📅',label:'Leave'},
+    {view:'a-lacc',    icon:'📊',label:'Leave accrual'},
+    {view:'a-payroll', icon:'💳',label:'Payroll'},
+    {view:'a-contracts',icon:'📜',label:'Contracts'},
+    {view:'a-uniforms',icon:'👕',label:'Uniforms'},
+    {view:'a-notify',  icon:'📢',label:'Broadcast'},
+    {divider:true,label:'My Account'},
+    {view:'s-notifs',  icon:'🔔',label:'Notifications'},
+    {view:'s-profile', icon:'👤',label:'Profile'},
+  ]);
+
+  $('main-area').innerHTML = `
+    ${adminDashView()}
+    ${adminAnalyticsView()}
+    ${adminReportsView()}
+    ${adminSecView()}
+    ${adminAuditView()}
+    ${adminSessionsView()}
+    ${adminUsersView()}
+    ${adminCreateUserView()}
+    ${adminBranchesView()}
+    ${adminShiftsView()}
+    ${adminAttView()}
+    ${adminLeaveView()}
+    ${adminLeaveAccrualView()}
+    ${adminPayrollView()}
+    ${adminContractsView()}
+    ${adminUniformsView()}
+    ${adminNotifyView()}
+    ${staffNotifsView()}
+    ${staffProfileView()}
+  `;
+
+  showView('a-dash', document.querySelector('.nav-item'));
+  loadAdminDash();
+  loadBranchesForAdmin();
+}
+
+function adminReportsView(){return `<div id="view-a-reports" class="view">
+  <div class="page-head"><div><div class="page-title">Payroll reports</div><div class="page-sub">Daily · weekly · monthly · attendance + leave + off-days · CSV export</div></div></div>
+  <div class="page-body">
+    <div class="card" style="margin-bottom:16px;">
+      <div class="card-head">Filters</div>
+      <div class="g2">
+        <div class="form-group" id="rep-br-wrap" style="display:none;"><label class="form-label">Branch</label><select class="form-select" id="rep-br"><option value="">All branches</option></select></div>
+        <div class="form-group"><label class="form-label">Employment type</label><select class="form-select" id="rep-emp"><option value="all">All</option><option value="casual">Casual</option><option value="reliever">Reliever</option><option value="contract">Contract</option></select></div>
+        <div class="form-group" style="display:flex;align-items:flex-end;padding-bottom:4px;"><label class="form-label" style="cursor:pointer;text-transform:none;"><input type="checkbox" id="rep-cache"/> Use cached snapshot (weekly / monthly)</label></div>
+      </div>
+    </div>
+    <div class="g2">
+      <div class="card">
+        <div class="card-head">Daily</div>
+        <div class="form-group"><label class="form-label">Date</label><input class="form-input" type="date" id="rep-d-date"/></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button type="button" class="btn btn-primary btn-sm" onclick="loadRepDaily()">Load</button>
+          <button type="button" class="btn btn-ghost btn-sm" onclick="exportRep('daily')">CSV</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head">Weekly</div>
+        <div class="form-group"><label class="form-label">Any day in week</label><input class="form-input" type="date" id="rep-w-start"/></div>
+        <div style="display:flex;gap:8px;">
+          <button type="button" class="btn btn-primary btn-sm" onclick="loadRepWeekly()">Load</button>
+          <button type="button" class="btn btn-ghost btn-sm" onclick="exportRep('weekly')">CSV</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head">Monthly</div>
+        <div class="g2">
+          <div class="form-group"><label class="form-label">Month</label><input class="form-input" type="number" id="rep-m-month" min="1" max="12"/></div>
+          <div class="form-group"><label class="form-label">Year</label><input class="form-input" type="number" id="rep-m-year" min="2020" max="2100"/></div>
+        </div>
+        <div style="display:flex;gap:8px;">
+          <button type="button" class="btn btn-primary btn-sm" onclick="loadRepMonthly()">Load</button>
+          <button type="button" class="btn btn-ghost btn-sm" onclick="exportRep('monthly')">CSV</button>
+        </div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:16px;">
+      <div class="card-head">Custom range (any time in the month)</div>
+      <p style="font-size:12px;color:var(--muted);margin:0 0 12px;">Pick start and end of the payroll window (e.g. 1st–last day of the month). Use <b>As at</b> to stop at today or any date before the window end (month-to-date).</p>
+      <div class="g2">
+        <div class="form-group"><label class="form-label">Start</label><input class="form-input" type="date" id="rep-p-start"/></div>
+        <div class="form-group"><label class="form-label">End</label><input class="form-input" type="date" id="rep-p-end"/></div>
+        <div class="form-group"><label class="form-label">As at (optional)</label><input class="form-input" type="date" id="rep-p-asat"/></div>
+        <div class="form-group"><label class="form-label">Filter (optional)</label><input class="form-input" id="rep-p-search" placeholder="YP Staff ID or name"/></div>
+      </div>
+      <div style="display:flex;gap:8px;">
+        <button type="button" class="btn btn-primary btn-sm" onclick="loadRepPeriod()">Load</button>
+        <button type="button" class="btn btn-ghost btn-sm" onclick="exportRep('range')">CSV</button>
+      </div>
+    </div>
+    <div class="card" style="margin-top:16px;">
+      <div class="card-head">Results <span id="rep-meta" style="font-weight:600;color:var(--muted);"></span></div>
+      <div id="rep-out"><p class="empty">Load a report.</p></div>
+    </div>
+    <div class="card" style="margin-top:16px;"><div class="card-head">Recent automated snapshots</div><div id="rep-snaps"><p class="empty">—</p></div></div>
+  </div>
+</div>`;}
+
+function repQueryBase(){
+  const q=new URLSearchParams();
+  q.set('employment_type',$('rep-emp')?.value||'all');
+  if($('rep-cache')?.checked) q.set('use_cache','true');
+  if(ME.role==='admin'&&$('rep-br')?.value) q.set('branch_id',$('rep-br').value);
+  return q;
+}
+
+function renderRepTable(data,label){
+  let cap='';
+  if(data.full_period_end && data.as_at && data.full_period_end!==data.as_at){
+    cap=` · capped at ${data.as_at} (window end ${data.full_period_end})`;
+  }
+  $('rep-meta').textContent=' — '+label+(data.source?' · '+data.source:'')+cap;
+  const rows=data.rows||[];
+  if(!rows.length){$('rep-out').innerHTML='<p class="empty">No rows.</p>';return;}
+  const s=data.summary_totals||{};
+  const sumHtml=`<div class="stat-grid" style="margin-bottom:14px;">
+    <div class="stat"><div class="stat-lbl">Σ Present</div><div class="stat-val">${s.days_present??'—'}</div></div>
+    <div class="stat"><div class="stat-lbl">Σ Absent</div><div class="stat-val">${s.days_absent??'—'}</div></div>
+    <div class="stat"><div class="stat-lbl">Σ Late</div><div class="stat-val">${s.days_late??'—'}</div></div>
+    <div class="stat"><div class="stat-lbl">Σ Sick</div><div class="stat-val">${s.sick_days??'—'}</div></div>
+    <div class="stat"><div class="stat-lbl">Σ Leave</div><div class="stat-val">${s.leave_days??'—'}</div></div>
+    <div class="stat"><div class="stat-lbl">Σ Off</div><div class="stat-val">${s.off_days??'—'}</div></div>
+    <div class="stat"><div class="stat-lbl">Σ Paid (non-contract)</div><div class="stat-val">${s.paid_days_casual_reliever??'—'}</div></div>
+  </div>`;
+  $('rep-out').innerHTML=sumHtml+'<div style="overflow-x:auto;"><table class="tbl"><thead><tr><th>YP Staff ID</th><th>Name</th><th>Branch</th><th>Type</th><th>Days</th><th>Pres</th><th>Abs</th><th>Late</th><th>Sick</th><th>Leave</th><th>Off</th><th>Paid</th></tr></thead><tbody>'+
+    rows.map(x=>`<tr><td style="font-family:monospace;font-size:11px;font-weight:600;">${escHtml(String(x.staff_id||'—'))}</td><td style="font-weight:700;">${escHtml(x.name)}</td><td style="font-size:12px;">${escHtml(x.branch)}</td><td>${escHtml(String(x.employment_type))}</td><td>${x.total_days_in_period}</td><td>${x.days_present}</td><td>${x.days_absent}</td><td>${x.days_late}</td><td>${x.sick_days}</td><td>${x.leave_days}</td><td>${x.off_days}</td><td>${x.paid_days==null?'—':x.paid_days}</td></tr>`).join('')+'</tbody></table></div>';
+}
+
+async function loadRepDaily(){
+  const q=repQueryBase();
+  q.set('date',$('rep-d-date').value);
+  try{
+    const r=await api('GET','/reports/daily?'+q.toString());
+    renderRepTable(r.data,'Daily '+$('rep-d-date').value);
+  }catch(e){$('rep-out').innerHTML='<p style="color:var(--danger);">'+escHtml(e.message)+'</p>';}
+}
+
+async function loadRepWeekly(){
+  const q=repQueryBase();
+  q.set('week_start',$('rep-w-start').value);
+  try{
+    const r=await api('GET','/reports/weekly?'+q.toString());
+    renderRepTable(r.data,'Weekly '+r.data.period_start+' → '+r.data.period_end);
+  }catch(e){$('rep-out').innerHTML='<p style="color:var(--danger);">'+escHtml(e.message)+'</p>';}
+}
+
+async function loadRepMonthly(){
+  const q=repQueryBase();
+  q.set('month',$('rep-m-month').value);
+  q.set('year',$('rep-m-year').value);
+  try{
+    const r=await api('GET','/reports/monthly?'+q.toString());
+    renderRepTable(r.data,'Monthly '+r.data.period_start+' → '+r.data.period_end);
+  }catch(e){$('rep-out').innerHTML='<p style="color:var(--danger);">'+escHtml(e.message)+'</p>';}
+}
+
+async function loadRepPeriod(){
+  const q=repQueryBase();
+  q.set('start_date',$('rep-p-start').value);
+  q.set('end_date',$('rep-p-end').value);
+  const asa=$('rep-p-asat')?.value;
+  if(asa) q.set('as_at',asa);
+  const rs=$('rep-p-search')?.value?.trim();
+  if(rs) q.set('search',rs);
+  try{
+    const r=await api('GET','/reports/period?'+q.toString());
+    renderRepTable(r.data,'Range '+r.data.period_start+' → '+r.data.period_end);
+  }catch(e){$('rep-out').innerHTML='<p style="color:var(--danger);">'+escHtml(e.message)+'</p>';}
+}
+
+async function exportRep(period){
+  const q=repQueryBase();
+  q.set('period',period);
+  if(period==='daily') q.set('date',$('rep-d-date').value);
+  if(period==='weekly') q.set('week_start',$('rep-w-start').value);
+  if(period==='monthly'){q.set('month',$('rep-m-month').value);q.set('year',$('rep-m-year').value);}
+  if(period==='range'){
+    q.set('start_date',$('rep-p-start').value);
+    q.set('end_date',$('rep-p-end').value);
+    const asa=$('rep-p-asat')?.value;
+    if(asa) q.set('as_at',asa);
+    const rs=$('rep-p-search')?.value?.trim();
+    if(rs) q.set('search',rs);
+  }
+  try{
+    const r=await fetch(API+'/reports/export?'+q.toString(),{headers:{Authorization:'Bearer '+TOKEN},credentials:'include'});
+    if(!r.ok){const j=await r.json().catch(()=>({}));throw new Error(j.message||'Export failed');}
+    const blob=await r.blob();
+    const cd=r.headers.get('Content-Disposition')||'';
+    const m=cd.match(/filename="([^"]+)"/);
+    const name=m?m[1]:'report.csv';
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');a.href=url;a.download=name;a.click();
+    URL.revokeObjectURL(url);
+  }catch(e){alert(e.message);}
+}
+
+async function loadRepSnaps(){
+  const box=$('rep-snaps');
+  if(!box) return;
+  if(ME.role!=='admin'){box.innerHTML='<p class="empty">Snapshot list is visible to admins only.</p>';return;}
+  try{
+    const r=await api('GET','/reports/snapshots?limit=15');
+    box.innerHTML=r.data.length===0?'<p class="empty">No snapshots yet. Cron: Sunday 23:59 (weekly) and last day of month 23:59 (monthly).</p>'
+      :'<table class="tbl"><thead><tr><th>Type</th><th>Start</th><th>End</th><th>Rows</th><th>When</th></tr></thead><tbody>'+
+      r.data.map(x=>`<tr><td>${escHtml(x.period_type)}</td><td>${x.period_start}</td><td>${x.period_end}</td><td>${x.row_count}</td><td style="font-size:12px;">${fdt(x.created_at)}</td></tr>`).join('')+'</tbody></table>';
+  }catch(e){box.innerHTML='<p style="color:var(--danger);">'+escHtml(e.message)+'</p>';}
+}
+
+function initRepFilters(){
+  const n=new Date();
+  const y=n.getFullYear(),mo=n.getMonth(),pad=x=>String(x).padStart(2,'0');
+  const first=`${y}-${pad(mo+1)}-01`;
+  const lastD=new Date(y,mo+1,0).getDate();
+  const last=`${y}-${pad(mo+1)}-${pad(lastD)}`;
+  if($('rep-d-date')&&!$('rep-d-date').value) $('rep-d-date').value=n.toISOString().slice(0,10);
+  if($('rep-w-start')&&!$('rep-w-start').value) $('rep-w-start').value=n.toISOString().slice(0,10);
+  if($('rep-m-month')&&!$('rep-m-month').value) $('rep-m-month').value=String(n.getMonth()+1);
+  if($('rep-m-year')&&!$('rep-m-year').value) $('rep-m-year').value=String(n.getFullYear());
+  if($('rep-p-start')&&!$('rep-p-start').value) $('rep-p-start').value=first;
+  if($('rep-p-end')&&!$('rep-p-end').value) $('rep-p-end').value=last;
+  if(ME.role==='admin'){
+    const w=$('rep-br-wrap');if(w) w.style.display='';
+    const sel=$('rep-br');if(sel&&BRANCHES&&BRANCHES.length){sel.innerHTML='<option value="">All branches</option>'+BRANCHES.map(b=>`<option value="${b._id}">${escHtml(b.name)}</option>`).join('');}
+  }
+}
+
+async function loadAdminReportsPage(){
+  if(ME.role==='admin'&&(!BRANCHES||!BRANCHES.length)){
+    try{const br=await api('GET','/admin/branches');BRANCHES=br.data||[];}catch(e){}
+  }
+  initRepFilters();
+  loadRepSnaps();
+}
+
+function adminShiftsView(){return `<div id="view-a-shifts" class="view">
+  <div class="page-head">
+    <div><div class="page-title">Shift management</div><div class="page-sub">9-hour shifts · branch-scoped for supervisors</div></div>
+    <button type="button" class="btn btn-ghost" onclick="loadAdminShifts()">↺ Refresh</button>
+  </div>
+  <div class="page-body">
+    <div class="g2">
+      <div class="card">
+        <div class="card-head">Assign one</div>
+        <div id="asg-msg"></div>
+        <div class="form-group"><label class="form-label">Branch</label><select class="form-select" id="as-br" onchange="fillAdminShiftStaffSelects()"></select></div>
+        <div class="form-group"><label class="form-label">Staff</label><select class="form-select" id="as-staff"></select></div>
+        <div class="form-group"><label class="form-label">Date</label><input class="form-input" type="date" id="as-date"/></div>
+        <div class="form-group"><label class="form-label">Start time</label><input class="form-input" id="as-start" value="08:00"/></div>
+        <button type="button" class="btn btn-role" onclick="submitAdminShiftAssign()">Assign shift</button>
+      </div>
+      <div class="card">
+        <div class="card-head">Bulk assign</div>
+        <div id="asg-bulk-msg"></div>
+        <div class="form-group"><label class="form-label">Branch</label><select class="form-select" id="as-bulk-br" onchange="fillAdminShiftBulkSelect()"></select></div>
+        <div class="form-group"><label class="form-label">Staff (hold Ctrl/Cmd)</label><select class="form-select" id="as-bulk-staff" multiple size="10" style="min-height:200px;"></select></div>
+        <div class="form-group"><label class="form-label">Date</label><input class="form-input" type="date" id="as-bulk-date"/></div>
+        <div class="form-group"><label class="form-label">Start time</label><input class="form-input" id="as-bulk-start" value="08:00"/></div>
+        <button type="button" class="btn btn-primary" onclick="submitAdminShiftBulk()">Bulk assign</button>
+      </div>
+    </div>
+    <div class="card" style="margin-top:16px;">
+      <div class="card-head">Schedule</div>
+      <div class="g2" style="align-items:flex-end;">
+        <div class="form-group"><label class="form-label">Branch</label><select class="form-select" id="as-list-br" onchange="refreshAdminShiftTable()"></select></div>
+        <div class="form-group"><label class="form-label">From</label><input class="form-input" type="date" id="as-list-from" onchange="refreshAdminShiftTable()"/></div>
+        <div class="form-group"><label class="form-label">To</label><input class="form-input" type="date" id="as-list-to" onchange="refreshAdminShiftTable()"/></div>
+        <div class="form-group"><label class="form-label">Search</label><input class="form-input" id="as-list-q" placeholder="YP Staff ID or name" oninput="clearTimeout(window._asq);window._asq=setTimeout(refreshAdminShiftTable,350)"/></div>
+      </div>
+      <div id="as-list"><div class="spinner"></div></div>
+    </div>
+  </div>
+</div>`;}
+
+async function ensureShiftUserCache(){
+  if(window._shiftUsersCache) return;
+  const r=await api('GET','/admin/users?is_active=true&include_profile=true');
+  window._shiftUsersCache=r.data;
+}
+
+function fillAdminShiftStaffSelects(){
+  const br=$('as-br')?.value;
+  const sel=$('as-staff');
+  if(!sel||!window._shiftUsersCache) return;
+  const rows=window._shiftUsersCache.filter(u=>u.branch_id&&String(u.branch_id._id||u.branch_id)===String(br)&&['staff','supervisor'].includes(u.role));
+  sel.innerHTML=rows.map(u=>{
+    const yp=u.staff_profile?.staff_id;
+    const lab=yp?`${u.name} · ${yp}`:u.name;
+    return `<option value="${u._id}">${escHtml(lab)} (${u.role})</option>`;
+  }).join('');
+}
+
+function fillAdminShiftBulkSelect(){
+  const br=$('as-bulk-br')?.value;
+  const sel=$('as-bulk-staff');
+  if(!sel||!window._shiftUsersCache) return;
+  const rows=window._shiftUsersCache.filter(u=>u.branch_id&&String(u.branch_id._id||u.branch_id)===String(br)&&['staff','supervisor'].includes(u.role));
+  sel.innerHTML=rows.map(u=>{
+    const yp=u.staff_profile?.staff_id;
+    const lab=yp?`${u.name} · ${yp}`:u.name;
+    return `<option value="${u._id}">${escHtml(lab)}</option>`;
+  }).join('');
+}
+
+async function loadAdminShifts(){
+  try{
+    if(!BRANCHES||!BRANCHES.length){
+      const br=await api('GET','/admin/branches');
+      BRANCHES=br.data||[];
+    }
+    delete window._shiftUsersCache;
+    await ensureShiftUserCache();
+    const n=new Date();
+    const from=new Date(n);from.setDate(from.getDate()-3);
+    const to=new Date(n);to.setDate(to.getDate()+28);
+    const brSel=$('as-br'),bulkBr=$('as-bulk-br'),listBr=$('as-list-br');
+    const opts=(BRANCHES||[]).map(b=>`<option value="${b._id}">${escHtml(b.name)}</option>`).join('');
+    if(brSel){brSel.innerHTML=opts;if(!brSel.value&&BRANCHES[0]) brSel.value=BRANCHES[0]._id;}
+    if(bulkBr){bulkBr.innerHTML=opts;if(!bulkBr.value&&BRANCHES[0]) bulkBr.value=BRANCHES[0]._id;}
+    if(listBr){listBr.innerHTML=opts;if(!listBr.value&&BRANCHES[0]) listBr.value=BRANCHES[0]._id;}
+    fillAdminShiftStaffSelects();
+    fillAdminShiftBulkSelect();
+    const df=$('as-date'),dbf=$('as-bulk-date');
+    if(df&&!df.value) df.value=n.toISOString().slice(0,10);
+    if(dbf&&!dbf.value) dbf.value=n.toISOString().slice(0,10);
+    const lf=$('as-list-from'),lt=$('as-list-to');
+    if(lf&&!lf.value) lf.value=from.toISOString().slice(0,10);
+    if(lt&&!lt.value) lt.value=to.toISOString().slice(0,10);
+    await refreshAdminShiftTable();
+  }catch(e){
+    const box=$('as-list');if(box) box.innerHTML=`<p style="color:var(--danger);">${e.message}</p>`;
+  }
+}
+
+async function refreshAdminShiftTable(){
+  const bid=$('as-list-br')?.value;
+  const from=$('as-list-from')?.value;
+  const to=$('as-list-to')?.value;
+  const box=$('as-list');
+  if(!bid||!from||!to||!box) return;
+  try{
+    const sq=$('as-list-q')?.value?.trim();
+    let url=`/shift/branch?branch_id=${encodeURIComponent(bid)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+    if(sq) url += '&search='+encodeURIComponent(sq);
+    const res=await api('GET',url);
+    if(!res.data.length){box.innerHTML='<p class="empty">No shifts in range.</p>';return;}
+    const profById=Object.fromEntries((window._shiftUsersCache||[]).map(u=>[String(u._id),u.staff_profile?.staff_id||'']));
+    box.innerHTML=`<table class="tbl"><thead><tr><th>Date</th><th>YP ID</th><th>Staff</th><th>Start</th><th>End</th><th>Action</th></tr></thead><tbody>${res.data.map(r=>{const sid=r.staff_id&&r.staff_id._id?String(r.staff_id._id):'';const yp=sid?profById[sid]:'';return `<tr>
+      <td>${r.shift_date}</td>
+      <td style="font-family:monospace;font-size:11px;">${escHtml(yp||'—')}</td>
+      <td>${escHtml(r.staff_id?.name||'—')}</td>
+      <td>${r.start_time}</td>
+      <td>${r.end_time}</td>
+      <td><button type="button" class="btn btn-danger btn-sm" onclick="deleteAdminShift('${r._id}')">Delete</button></td>
+    </tr>`;}).join('')}</tbody></table>`;
+  }catch(e){box.innerHTML=`<p style="color:var(--danger);">${e.message}</p>`;}
+}
+
+async function deleteAdminShift(id){
+  if(!confirm('Remove this shift?')) return;
+  try{await api('DELETE',`/shift/${id}`);refreshAdminShiftTable();}catch(e){alert(e.message);}
+}
+
+async function submitAdminShiftAssign(){
+  const staff_id=$('as-staff').value;
+  const branch_id=$('as-br').value;
+  const shift_date=$('as-date').value;
+  const start_time=($('as-start').value||'').trim();
+  if(!staff_id||!branch_id||!shift_date||!start_time){flash('asg-msg','Complete all fields.');return;}
+  try{
+    await api('POST','/shift/assign',{staff_id,branch_id,shift_date,start_time});
+    flash('asg-msg','Assigned.','success');
+    refreshAdminShiftTable();
+  }catch(e){flash('asg-msg',e.message);}
+}
+
+async function submitAdminShiftBulk(){
+  const branch_id=$('as-bulk-br').value;
+  const shift_date=$('as-bulk-date').value;
+  const start_time=($('as-bulk-start').value||'').trim();
+  const sel=$('as-bulk-staff');
+  const staff_ids=sel?Array.from(sel.selectedOptions).map(o=>o.value).filter(Boolean):[];
+  if(staff_ids.length<1||!branch_id||!shift_date||!start_time){flash('asg-bulk-msg','Select staff and fill date/time.');return;}
+  try{
+    const r=await api('POST','/shift/bulk-assign',{staff_ids,shift_date,start_time});
+    flash('asg-bulk-msg',r.message,'success');
+    refreshAdminShiftTable();
+  }catch(e){flash('asg-bulk-msg',e.message);}
+}
+
+function adminAnalyticsView(){return `<div id="view-a-analytics" class="view">
+  <div class="page-head">
+    <div><div class="page-title">Workforce analytics</div><div class="page-sub">Real-time attendance classification · filters & exports</div></div>
+    <button type="button" class="btn btn-ghost" onclick="loadAdminAnalytics()">↺ Refresh</button>
+  </div>
+  <div class="page-body">
+    <div class="card" style="margin-bottom:16px;">
+      <div class="g2" style="align-items:flex-end;">
+        <div class="form-group"><label class="form-label">View</label>
+          <select class="form-select" id="an-period" onchange="loadAdminAnalytics()">
+            <option value="daily">Daily</option>
+            <option value="weekly">Weekly</option>
+            <option value="monthly">Monthly</option>
+          </select>
+        </div>
+        <div class="form-group" id="an-grp-day"><label class="form-label">Date</label><input class="form-input" type="date" id="an-date" onchange="loadAdminAnalytics()"/></div>
+        <div class="form-group" id="an-grp-week" style="display:none;"><label class="form-label">Week (any day)</label><input class="form-input" type="date" id="an-week" onchange="loadAdminAnalytics()"/></div>
+        <div class="form-group" id="an-grp-month" style="display:none;">
+          <label class="form-label">Month</label>
+          <div style="display:flex;gap:8px;">
+            <input class="form-input" type="number" id="an-month" min="1" max="12" style="width:72px;"/>
+            <input class="form-input" type="number" id="an-year" min="2020" max="2100" style="width:88px;"/>
+          </div>
+        </div>
+        <div class="form-group"><label class="form-label">Branch</label>
+          <select class="form-select" id="an-branch" onchange="loadAdminAnalytics()" style="min-width:160px;">
+            <option value="">All branches</option>
+          </select>
+        </div>
+        <div class="form-group" style="min-width:220px;">
+          <label class="form-label">Search</label>
+          <input class="form-input" id="an-search" placeholder="YP Staff ID, name, email" oninput="clearTimeout(window._anSch);window._anSch=setTimeout(()=>{AN_PAGE=1;loadAdminAnalytics();},350)"/>
+        </div>
+      </div>
+      <div id="an-summary" style="display:flex;flex-wrap:wrap;gap:10px;margin-top:12px;font-size:12px;"></div>
+      <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;">
+        <button type="button" class="btn btn-primary btn-sm" onclick="downloadAnalyticsExport()">Download CSV</button>
+      </div>
+    </div>
+    <div class="card"><div id="an-grid"><div class="spinner"></div></div></div>
+  </div>
+</div>`;}
+
+let AN_PAGE = 1;
+async function loadAdminAnalytics(){
+  const period = $('an-period') ? $('an-period').value : 'daily';
+  const n = new Date();
+  if ($('an-date') && !$('an-date').value) $('an-date').value = n.toISOString().slice(0,10);
+  if ($('an-week') && !$('an-week').value) $('an-week').value = n.toISOString().slice(0,10);
+  if ($('an-month') && !$('an-month').value) { $('an-month').value = String(n.getMonth()+1); $('an-year').value = String(n.getFullYear()); }
+  if ($('an-grp-day')) $('an-grp-day').style.display = period === 'daily' ? '' : 'none';
+  if ($('an-grp-week')) $('an-grp-week').style.display = period === 'weekly' ? '' : 'none';
+  if ($('an-grp-month')) $('an-grp-month').style.display = period === 'monthly' ? '' : 'none';
+  if ($('an-branch') && BRANCHES.length && $('an-branch').options.length <= 1) {
+    $('an-branch').innerHTML = '<option value="">All branches</option>' + BRANCHES.map(b=>`<option value="${b._id}">${escHtml(b.name)}</option>`).join('');
+  }
+  const branch = $('an-branch') ? $('an-branch').value : '';
+  const q = branch ? '&branch_id='+encodeURIComponent(branch) : '';
+  const anQ = $('an-search')?.value?.trim();
+  const sq = anQ ? '&search='+encodeURIComponent(anQ) : '';
+  const sumEl = $('an-summary');
+  const grid = $('an-grid');
+  if (grid) grid.innerHTML = '<div class="spinner"></div>';
+  try {
+    if (period === 'daily') {
+      const d = $('an-date').value;
+      const [sum, day] = await Promise.all([
+        api('GET','/analytics/summary/daily?date='+encodeURIComponent(d)+q),
+        api('GET','/analytics/attendance/daily?date='+encodeURIComponent(d)+'&page='+AN_PAGE+'&limit=50'+q+sq)
+      ]);
+      const s = sum.data.summary || {};
+      if (sumEl) sumEl.innerHTML = Object.keys(s).map(k=>`<span class="tag" style="background:var(--surface3);">${escHtml(k)}: <b>${s[k]}</b></span>`).join(' ');
+      const rows = day.data.rows || [];
+      const pres = rows.filter(r=>r.status==='Present' || r.status==='Late');
+      const abs = rows.filter(r=>r.status==='Absent');
+      let html = '<div style="margin-bottom:14px;font-size:12px;color:var(--muted);">Present list: '+pres.length+' · Absent list: '+abs.length+' (current page)</div>';
+      html += '<div style="overflow-x:auto;"><table class="tbl"><thead><tr><th>YP Staff ID</th><th>Name</th><th>Role</th><th>Branch</th><th>Type</th><th>Status</th></tr></thead><tbody>';
+      html += rows.map(r=>`<tr><td style="font-family:monospace;font-size:11px;font-weight:600;">${escHtml(r.staff_id)}</td><td style="font-weight:700;">${escHtml(r.name)}</td><td>${r.role}</td><td style="font-size:12px;">${escHtml(r.branch)}</td><td>${escHtml(r.employment_type)}</td><td><span class="badge b-info">${escHtml(r.status)}</span></td></tr>`).join('');
+      html += '</tbody></table></div>';
+      const totalPages = Math.max(1, Math.ceil((day.data.total||0) / (day.data.limit||50)));
+      html += '<div style="margin-top:12px;display:flex;gap:8px;"><button type="button" class="btn btn-ghost btn-sm" onclick="AN_PAGE=Math.max(1,AN_PAGE-1);loadAdminAnalytics();">Prev</button><button type="button" class="btn btn-ghost btn-sm" onclick="AN_PAGE=Math.min('+totalPages+',AN_PAGE+1);loadAdminAnalytics();">Next</button><span style="font-size:12px;color:var(--muted);">Page '+day.data.page+' / '+totalPages+'</span></div>';
+      if (grid) grid.innerHTML = html;
+      return;
+    }
+    if (period === 'weekly') {
+      const w = $('an-week').value;
+      const res = await api('GET','/analytics/attendance/weekly?week_start='+encodeURIComponent(w)+q+sq);
+      const rows = res.data.rows || [];
+      if (sumEl) sumEl.innerHTML = '<span class="tag">Week '+escHtml(res.data.week_start)+' → '+escHtml(res.data.week_end)+'</span>';
+      if (grid) grid.innerHTML = '<div style="overflow-x:auto;"><table class="tbl"><thead><tr><th>YP Staff ID</th><th>Name</th><th>Branch</th><th>Days worked</th><th>Leave</th><th>Sick</th></tr></thead><tbody>'+
+        rows.map(r=>`<tr><td style="font-family:monospace;font-size:11px;font-weight:600;">${escHtml(r.staff_id)}</td><td style="font-weight:700;">${escHtml(r.name)}</td><td>${escHtml(r.branch)}</td><td>${r.days_worked}</td><td>${r.leave_days}</td><td>${r.sick_days}</td></tr>`).join('')+'</tbody></table></div>';
+      return;
+    }
+    const month = parseInt($('an-month').value,10), year = parseInt($('an-year').value,10);
+    const res = await api('GET','/analytics/attendance/monthly?month='+month+'&year='+year+q+sq);
+    const rows = res.data.rows || [];
+    if (sumEl) sumEl.innerHTML = '<span class="tag">'+year+'-'+String(month).padStart(2,'0')+'</span>';
+    if (grid) grid.innerHTML = '<div style="overflow-x:auto;"><table class="tbl"><thead><tr><th>YP Staff ID</th><th>Name</th><th>Branch</th><th>Days present</th><th>Paid days</th></tr></thead><tbody>'+
+      rows.map(r=>`<tr><td style="font-family:monospace;font-size:11px;font-weight:600;">${escHtml(r.staff_id)}</td><td style="font-weight:700;">${escHtml(r.name)}</td><td>${escHtml(r.branch)}</td><td>${r.days_present}</td><td>${escHtml(r.paid_days)}</td></tr>`).join('')+'</tbody></table></div>';
+  } catch(e) {
+    if (grid) grid.innerHTML = '<p style="color:var(--danger);">'+escHtml(e.message)+'</p>';
+  }
+}
+
+async function downloadAnalyticsExport(){
+  const period = $('an-period') ? $('an-period').value : 'daily';
+  const branch = $('an-branch') && $('an-branch').value ? '&branch_id='+encodeURIComponent($('an-branch').value) : '';
+  const anQ = $('an-search')?.value?.trim();
+  const sq = anQ ? '&search='+encodeURIComponent(anQ) : '';
+  let url = '/analytics/export?period='+encodeURIComponent(period)+branch+sq;
+  const n = new Date();
+  if (period === 'daily') url += '&date='+encodeURIComponent($('an-date').value || n.toISOString().slice(0,10));
+  if (period === 'weekly') url += '&week_start='+encodeURIComponent($('an-week').value || n.toISOString().slice(0,10));
+  if (period === 'monthly') url += '&month='+encodeURIComponent($('an-month').value || (n.getMonth()+1))+'&year='+encodeURIComponent($('an-year').value || n.getFullYear());
+  try {
+    const r = await fetch(API+url, { headers: { Authorization: 'Bearer '+TOKEN }, credentials: 'include' });
+    const ct = r.headers.get('Content-Type') || '';
+    if (ct.includes('application/json')) { const j = await r.json(); throw new Error(j.message||'Export failed'); }
+    const blob = await r.blob();
+    const dispo = r.headers.get('Content-Disposition') || '';
+    const fnMatch = dispo.match(/filename="?([^";]+)"?/);
+    const fn = fnMatch ? fnMatch[1] : 'export.csv';
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = fn;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  } catch(e) { alert(e.message); }
+}
+
+function adminContractsView(){return `<div id="view-a-contracts" class="view">
+  <div class="page-head"><div><div class="page-title">Employment contracts</div><div class="page-sub">Only contract-type staff · unsigned active contracts block clock-in</div></div></div>
+  <div class="page-body"><div class="g2">
+    <div class="card">
+      <div class="card-head">Create contract</div>
+      <div id="ct-msg"></div>
+      <div class="form-group"><label class="form-label">Contract staff</label><select class="form-select" id="ct-staff"><option value="">Loading…</option></select></div>
+      <div class="form-group"><label class="form-label">Contract text</label><textarea class="form-textarea" id="ct-text" rows="10" placeholder="Terms of employment…"></textarea></div>
+      <div class="g2">
+        <div class="form-group"><label class="form-label">Start date</label><input class="form-input" type="date" id="ct-start"/></div>
+        <div class="form-group"><label class="form-label">End date</label><input class="form-input" type="date" id="ct-end"/></div>
+      </div>
+      <button type="button" class="btn btn-role" onclick="submitAdminContract()">Create & notify staff</button>
+    </div>
+    <div class="card"><div class="card-head">Recent contracts</div><div id="ct-list"><div class="spinner"></div></div></div>
+  </div></div>
+</div>`;}
+
+async function loadAdminContracts(){
+  try{
+    const [listRes,usersRes]=await Promise.all([
+      api('GET','/admin/contracts'),
+      api('GET','/admin/users?role=staff&is_active=true&include_profile=true')
+    ]);
+    const staff=(usersRes.data||[]).filter(u=>u.staff_profile&&u.staff_profile.type==='contract');
+    const sel=$('ct-staff');
+    if(sel)sel.innerHTML='<option value="">Select contract staff…</option>'+staff.map(u=>`<option value="${u._id}">${escHtml(u.name)} (${escHtml(u.staff_profile.staff_id||'')})</option>`).join('');
+    const list=(listRes.data||[]).slice(0,50);
+    const tb=$('ct-list');
+    if(tb)tb.innerHTML=list.length===0?'<p class="empty">No contracts yet.</p>'
+      :`<table class="tbl"><thead><tr><th>Staff</th><th>Period</th><th>Accepted</th><th>Signed</th></tr></thead><tbody>
+        ${list.map(c=>{
+          const sn=c.staff_id&&c.staff_id.name?c.staff_id.name:'—';
+          return`<tr><td style="font-weight:700;">${escHtml(sn)}</td><td style="font-size:12px;">${fd(c.start_date)} – ${fd(c.end_date)}</td><td>${c.accepted?'Yes':'No'}</td><td style="font-size:12px;">${c.signed_at?fdt(c.signed_at):'—'}</td></tr>`;
+        }).join('')}</tbody></table>`;
+  }catch(e){const tb=$('ct-list');if(tb)tb.innerHTML=`<p style="color:var(--danger);">${e.message}</p>`;}
+}
+
+async function submitAdminContract(){
+  const staff_id=$('ct-staff').value;
+  const contract_text=$('ct-text').value.trim();
+  const start_date=$('ct-start').value;
+  const end_date=$('ct-end').value;
+  if(!staff_id||!contract_text||!start_date||!end_date){flash('ct-msg','Fill all fields.','error');return;}
+  try{
+    await api('POST','/admin/contracts',{staff_id,contract_text,start_date,end_date});
+    flash('ct-msg','Contract created. Staff has been notified.','success');
+    $('ct-text').value='';
+    loadAdminContracts();
+  }catch(e){flash('ct-msg',e.message);}
+}
+
+function adminLeaveAccrualView(){return `<div id="view-a-lacc" class="view">
+  <div class="page-head"><div><div class="page-title">Leave accrual</div><div class="page-sub">Earned ≈ complete months since join × 1.75 (visibility for HR)</div></div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
+    <input class="form-input" id="lacc-q" placeholder="YP Staff ID or name" style="width:200px;" oninput="clearTimeout(window._lq);window._lq=setTimeout(loadLeaveAccrualReport,350)"/>
+    <button type="button" class="btn btn-ghost" onclick="loadLeaveAccrualReport()">↺ Refresh</button>
+    </div>
+  </div>
+  <div class="page-body"><div class="card"><div id="lacc-content"><div class="spinner"></div></div></div></div>
+</div>`;}
+
+async function loadLeaveAccrualReport(){
+  const el=$('lacc-content');
+  if(!el)return;
+  try{
+    const q=$('lacc-q')?.value?.trim();
+    const res=await api('GET','/admin/leave-accrual'+(q?'?search='+encodeURIComponent(q):''));
+    const rows=res.data||[];
+    el.innerHTML=rows.length===0?'<p class="empty">No staff with profiles.</p>'
+      :`<table class="tbl"><thead><tr><th>YP Staff ID</th><th>Name</th><th>Months worked</th><th>Earned leave (days)</th><th>Join date</th></tr></thead><tbody>
+        ${rows.map(r=>`<tr>
+          <td style="font-family:monospace;font-size:12px;">${escHtml(r.staff_id)}</td>
+          <td style="font-weight:700;">${escHtml(r.name)}</td>
+          <td>${r.months_worked}</td>
+          <td style="color:var(--accent);font-weight:700;">${r.earned_leave_days}</td>
+          <td style="font-size:12px;">${fd(r.join_date)}</td>
+        </tr>`).join('')}</tbody></table>`;
+  }catch(e){el.innerHTML=`<p style="color:var(--danger);">${e.message}</p>`;}
+}
+
+function adminDashView(){return `<div id="view-a-dash" class="view">
+  <div class="page-head">
+    <div><div class="page-title">Control Center</div><div class="page-sub" id="a-date">—</div></div>
+    <button class="btn btn-ghost" onclick="loadAdminDash()">↺ Refresh</button>
+  </div>
+  <div class="page-body">
+    <div class="stat-grid" id="a-stats"><div class="spinner"></div></div>
+    <div class="g2">
+      <div class="card"><div class="card-head">Security Alerts</div><div id="a-alerts"><div class="spinner"></div></div></div>
+      <div class="card"><div class="card-head">Recent Activity</div><div id="a-activity"><div class="spinner"></div></div></div>
+    </div>
+  </div>
+</div>`;}
+
+async function loadAdminDash() {
+  $('a-date').textContent=new Date().toLocaleDateString('en-KE',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
+  try{
+    const res=await api('GET','/admin/stats'); const d=res.data;
+    if(d.security_alerts>0){const nb=$('nb-alerts');if(nb){nb.textContent=d.security_alerts;nb.style.display='inline-block';}}
+    $('a-stats').innerHTML=`
+      <div class="stat"><div class="stat-lbl">Total Staff</div><div class="stat-val vr">${d.workforce.total_staff}</div><div class="stat-hint">${d.workforce.active} active</div></div>
+      <div class="stat"><div class="stat-lbl">Clocked In Today</div><div class="stat-val vs">${d.today.clocked_in}</div></div>
+      <div class="stat"><div class="stat-lbl">Pending Leave</div><div class="stat-val vw">${d.pending_leave}</div></div>
+      <div class="stat"><div class="stat-lbl">Security Alerts</div><div class="stat-val ${d.security_alerts>0?'vd':'vs'}">${d.security_alerts}</div></div>
+      <div class="stat"><div class="stat-lbl">Active Sessions</div><div class="stat-val vi">${d.active_sessions}</div></div>
+      <div class="stat"><div class="stat-lbl">Branches</div><div class="stat-val">${d.branches}</div></div>`;
+    $('a-alerts').innerHTML=d.alerts.length===0
+      ?'<p style="color:var(--success);font-size:13px;">✓ No active security alerts</p>'
+      :d.alerts.map(a=>`<div class="sec-event">
+          <div class="sec-icon" style="background:rgba(255,77,109,0.15);">🚨</div>
+          <div><div style="font-size:13px;font-weight:600;">${a.type.replace(/_/g,' ')}</div>
+          <div style="font-size:11px;color:var(--muted);">${a.user_id?.email||a.email||'—'} · ${fdt(a.created_at)}</div></div>
+        </div>`).join('');
+    $('a-activity').innerHTML=d.recent_activity.length===0?'<p class="empty">No recent activity</p>'
+      :d.recent_activity.map(a=>`<div class="notif-row"><div class="notif-dot nd-unread"></div>
+          <div><div style="font-size:13px;">${a.action.replace(/_/g,' ')}</div>
+          <div style="font-size:11px;color:var(--muted);">${a.admin_id?.name||'System'} · ${fdt(a.timestamp)}</div></div>
+        </div>`).join('');
+  }catch(e){$('a-stats').innerHTML=`<p style="color:var(--danger);">${e.message}</p>`;}
+}
+
+function adminSecView(){return `<div id="view-a-sec" class="view">
+  <div class="page-head"><div><div class="page-title">Security Events</div></div>
+    <div style="display:flex;gap:8px;">
+      <select class="form-select" id="sec-type" style="width:180px;" onchange="loadSec()"><option value="">All types</option>
+        <option value="failed_login">Failed logins</option><option value="account_lockout">Lockouts</option>
+        <option value="new_device">New devices</option><option value="anomalous_action">Anomalous</option>
+        <option value="privilege_escalation_attempt">Privilege escalation</option><option value="rate_limit_breach">Rate limit</option>
+      </select>
+      <select class="form-select" id="sec-res" style="width:120px;" onchange="loadSec()">
+        <option value="false">Unresolved</option><option value="true">Resolved</option><option value="">All</option>
+      </select>
+    </div>
+  </div>
+  <div class="page-body"><div class="card"><div id="sec-content"><div class="spinner"></div></div></div></div>
+</div>`;}
+
+async function loadSec(){
+  const t=$('sec-type').value,r=$('sec-res').value;
+  let path='/admin/security-events?limit=100';
+  if(t)path+=`&type=${t}`;if(r!=='')path+=`&resolved=${r}`;
+  try{
+    const res=await api('GET',path);
+    if(!res.data.length){$('sec-content').innerHTML='<p class="empty">No events.</p>';return;}
+    const icons={failed_login:'🔑',account_lockout:'🔒',new_device:'📱',anomalous_action:'⚡',privilege_escalation_attempt:'🚨',rate_limit_breach:'🚫'};
+    $('sec-content').innerHTML=`<table class="tbl"><thead><tr><th>Type</th><th>User</th><th>IP</th><th>Time</th><th>Status</th><th>Action</th></tr></thead>
+      <tbody>${res.data.map(e=>`<tr>
+        <td>${icons[e.type]||'⚠'} ${e.type.replace(/_/g,' ')}</td>
+        <td style="font-size:12px;">${e.user_id?.email||e.email||'—'}</td>
+        <td style="font-family:monospace;font-size:11px;">${e.ip_address||'—'}</td>
+        <td style="font-size:12px;">${fdt(e.created_at)}</td>
+        <td><span class="badge ${e.resolved?'b-approved':'b-rejected'}">${e.resolved?'Resolved':'Open'}</span></td>
+        <td>${!e.resolved?`<button class="btn btn-success btn-sm" onclick="resolveSec('${e._id}')">Resolve</button>`:'—'}</td>
+      </tr>`).join('')}</tbody></table>`;
+  }catch(e){$('sec-content').innerHTML=`<p style="color:var(--danger);">${e.message}</p>`;}
+}
+async function resolveSec(id){await api('PATCH',`/admin/security-events/${id}/resolve`);loadSec();loadAdminDash();}
+
+function adminAuditView(){return `<div id="view-a-audit" class="view">
+  <div class="page-head"><div><div class="page-title">Audit Log</div></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      <input class="form-input" id="aud-q" placeholder="Search action…" style="width:150px;" oninput="loadAudit()"/>
+      <select class="form-select" id="aud-mod" style="width:130px;" onchange="loadAudit()">
+        <option value="">All modules</option><option>users</option><option>branches</option>
+        <option>attendance</option><option>leave</option><option>payroll</option>        <option>uniforms</option><option>contracts</option><option>security</option>
+      </select>
+    </div>
+  </div>
+  <div class="page-body"><div class="card"><div id="audit-content"><div class="spinner"></div></div></div></div>
+</div>`;}
+
+async function loadAudit(){
+  const q=$('aud-q')?.value,m=$('aud-mod')?.value;
+  let path='/admin/audit?limit=100';
+  if(q)path+=`&action=${encodeURIComponent(q)}`;if(m)path+=`&module=${m}`;
+  try{
+    const res=await api('GET',path);
+    if(!res.data.length){$('audit-content').innerHTML='<p class="empty">No records.</p>';return;}
+    $('audit-content').innerHTML=`<table class="tbl"><thead><tr><th>Action</th><th>Admin</th><th>Module</th><th>IP</th><th>Time</th></tr></thead>
+      <tbody>${res.data.map(l=>`<tr>
+        <td style="font-weight:700;font-size:12px;">${l.action}</td>
+        <td style="font-size:12px;">${l.admin_id?.name||'—'}</td>
+        <td><span class="badge b-info" style="font-size:10px;">${l.module||'—'}</span></td>
+        <td style="font-family:monospace;font-size:11px;">${l.ip_address||'—'}</td>
+        <td style="font-size:12px;">${fdt(l.timestamp)}</td>
+      </tr>`).join('')}</tbody></table>`;
+  }catch(e){$('audit-content').innerHTML=`<p style="color:var(--danger);">${e.message}</p>`;}
+}
+
+function adminSessionsView(){return `<div id="view-a-sessions" class="view">
+  <div class="page-head"><div><div class="page-title">Active Sessions</div></div><button class="btn btn-ghost" onclick="loadSessions()">↺ Refresh</button></div>
+  <div class="page-body"><div class="card"><div id="sessions-content"><div class="spinner"></div></div></div></div>
+</div>`;}
+async function loadSessions(){
+  try{
+    const res=await api('GET','/admin/sessions');
+    if(!res.data.length){$('sessions-content').innerHTML='<p class="empty">No active sessions.</p>';return;}
+    $('sessions-content').innerHTML=`<table class="tbl"><thead><tr><th>User</th><th>Role</th><th>IP</th><th>Login</th><th>Expires</th><th>Action</th></tr></thead>
+      <tbody>${res.data.map(s=>`<tr>
+        <td style="font-weight:700;">${s.user_id?.name||'—'}<br/><span style="font-size:11px;color:var(--muted);">${s.user_id?.email||''}</span></td>
+        <td><span class="badge b-${s.user_id?.role||'staff'}">${s.user_id?.role||'—'}</span></td>
+        <td style="font-family:monospace;font-size:12px;">${s.ip_address||'—'}</td>
+        <td style="font-size:12px;">${fdt(s.login_at)}</td>
+        <td style="font-size:12px;">${fdt(s.expires_at)}</td>
+        <td><button class="btn btn-danger btn-sm" onclick="revokeSession('${s.user_id?._id}')">Revoke All</button></td>
+      </tr>`).join('')}</tbody></table>`;
+  }catch(e){$('sessions-content').innerHTML=`<p style="color:var(--danger);">${e.message}</p>`;}
+}
+async function revokeSession(uid){if(!confirm('Revoke all sessions?'))return;await api('DELETE',`/admin/sessions/${uid}`);loadSessions();}
+
+function adminUsersView(){return `<div id="view-a-users" class="view">
+  <div class="page-head"><div><div class="page-title">User Management</div></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      <input class="form-input" id="us-q" placeholder="Name, email, YP Staff ID…" style="width:200px;" oninput="loadUsers()"/>
+      <select class="form-select" id="us-role" style="width:120px;" onchange="loadUsers()"><option value="">All roles</option><option>admin</option><option>supervisor</option><option>staff</option></select>
+      <select class="form-select" id="us-active" style="width:110px;" onchange="loadUsers()"><option value="">All</option><option value="true">Active</option><option value="false">Inactive</option></select>
+    </div>
+  </div>
+  <div class="page-body"><div class="card"><div id="users-content"><div class="spinner"></div></div></div></div>
+</div>`;}
+
+async function loadUsers(){
+  const q=$('us-q')?.value,role=$('us-role')?.value,active=$('us-active')?.value;
+  let path='/admin/users?include_profile=true&';
+  if(q)path+=`search=${encodeURIComponent(q)}&`;if(role)path+=`role=${role}&`;if(active!=='')path+=`is_active=${active}&`;
+  try{
+    const res=await api('GET',path);
+    $('users-content').innerHTML=res.data.length===0?'<p class="empty">No users found.</p>'
+      :`<table class="tbl"><thead><tr><th>YP Staff ID</th><th>Name</th><th>Email</th><th>Role</th><th>Employment</th><th>Branch</th><th>Status</th><th>Last Login</th><th>Actions</th></tr></thead>
+        <tbody>${res.data.map(u=>{
+          const emp=u.staff_profile?.type?`<span class="tag">${u.staff_profile.type}</span>`:'—';
+          const yp=u.staff_profile?.staff_id;
+          const uid=u._id;
+          const jn=JSON.stringify(u.name);
+          const promStaff=u.is_active&&u.role==='staff'?`<button type="button" class="btn btn-role btn-sm" onclick='openPromoteSupervisor("${uid}", ${jn})'>Promote to Supervisor</button>`:'';
+          const demSup=u.is_active&&u.role==='supervisor'?`<button type="button" class="btn btn-warning btn-sm" onclick='runDemoteSupervisor("${uid}", ${jn})'>Demote to Staff</button>`:'';
+          let empUp='';
+          if(u.staff_profile&&u.is_active&&['staff','supervisor'].includes(u.role)){
+            if(u.staff_profile.type==='casual') empUp=`<button type="button" class="btn btn-success btn-sm" onclick='runPromoteEmployment("${uid}","reliever", ${jn})'>Employment → Reliever</button>`;
+            else if(u.staff_profile.type==='reliever') empUp=`<button type="button" class="btn btn-success btn-sm" onclick='runPromoteEmployment("${uid}","contract", ${jn})'>Employment → Contract</button>`;
+          }
+          return `<tr>
+          <td style="font-family:monospace;font-size:11px;font-weight:600;">${escHtml(yp||'—')}</td>
+          <td style="font-weight:700;">${u.name}</td>
+          <td style="font-size:12px;color:var(--muted);">${u.email}</td>
+          <td><span class="badge b-${u.role}">${u.role}</span></td>
+          <td>${emp}</td>
+          <td style="font-size:12px;">${u.branch_id?.name||'—'}</td>
+          <td><span class="badge ${u.is_active?'b-active':'b-inactive'}">${u.is_active?'Active':'Inactive'}</span></td>
+          <td style="font-size:12px;color:var(--muted);">${u.last_login?fdt(u.last_login):'Never'}</td>
+          <td style="display:flex;gap:5px;flex-wrap:wrap;max-width:320px;">
+            ${promStaff}${demSup}${empUp}
+            ${u.is_active?`<button class="btn btn-warning btn-sm" onclick='doDeactivate("${uid}", ${jn})'>Deactivate</button>`:''}
+            <button class="btn btn-danger btn-sm" onclick="openDelete('${uid}')">Delete</button>
+          </td>
+        </tr>`;
+        }).join('')}</tbody></table>`;
+  }catch(e){$('users-content').innerHTML=`<p style="color:var(--danger);">${e.message}</p>`;}
+}
+
+function openPromoteSupervisor(id,name){
+  PROMOTE_USER_ID=id;
+  $('m-promote-sup-name').textContent=name;
+  $('m-promote-sup-msg').innerHTML='';
+  const br=$('m-promote-sup-branch');
+  br.innerHTML=(BRANCHES||[]).map(b=>`<option value="${b._id}">${escHtml(b.name)}</option>`).join('');
+  openModal('m-promote-sup');
+}
+
+async function submitPromoteSupervisor(){
+  if(!PROMOTE_USER_ID) return;
+  if(!confirm('Are you sure you want to proceed?')) return;
+  const branch_id=$('m-promote-sup-branch').value;
+  try{
+    await api('POST','/admin/promote-role',{user_id:PROMOTE_USER_ID,new_role:'supervisor',branch_id});
+    flash('m-promote-sup-msg','Promotion complete.','success');
+    closeModal('m-promote-sup');
+    loadUsers();
+  }catch(e){flash('m-promote-sup-msg',e.message);}
+}
+
+async function runDemoteSupervisor(id,name){
+  if(!confirm(`Are you sure you want to demote ${name} to staff?`)) return;
+  try{await api('POST','/admin/demote-role',{user_id:id});loadUsers();}catch(e){alert(e.message);}
+}
+
+async function runPromoteEmployment(id,newType,name){
+  if(!confirm(`Are you sure you want to upgrade employment for ${name}?`)) return;
+  try{await api('POST','/admin/promote-employment',{staff_id:id,new_type:newType});loadUsers();}catch(e){alert(e.message);}
+}
+
+async function doDeactivate(id,name){
+  if(!confirm(`Deactivate ${name}?`))return;
+  try{await api('PATCH',`/admin/users/${id}/deactivate`);loadUsers();}catch(e){alert(e.message);}
+}
+function openDelete(id){PENDING_DELETE_ID=id;$('m-del-confirm').value='';$('m-del-pass').value='';$('m-delete-msg').innerHTML='';openModal('m-delete');}
+async function submitDelete(){
+  try{
+    await api('DELETE',`/admin/users/${PENDING_DELETE_ID}`,{confirmation:$('m-del-confirm').value,admin_password:$('m-del-pass').value});
+    closeModal('m-delete');loadUsers();
+  }catch(e){flash('m-delete-msg',e.message);}
+}
+
+function adminCreateUserView(){return `<div id="view-a-create" class="view">
+  <div class="page-head"><div><div class="page-title">Create User</div></div></div>
+  <div class="page-body"><div class="card" style="max-width:520px;">
+    <div id="cu-msg"></div>
+    <div class="g2">
+      <div class="form-group"><label class="form-label">Full Name</label><input class="form-input" id="cu-name" placeholder="Jane Doe"/></div>
+      <div class="form-group"><label class="form-label">Email</label><input class="form-input" id="cu-email" type="email" placeholder="jane@co.ke"/></div>
+    </div>
+    <div class="form-group"><label class="form-label">Password (min 8, upper+lower+digit)</label><input class="form-input" id="cu-pass" type="password"/></div>
+    <div class="g2">
+      <div class="form-group"><label class="form-label">Role</label>
+        <select class="form-select" id="cu-role"><option value="staff">Staff</option><option value="supervisor">Supervisor</option><option value="admin">Admin</option></select>
+      </div>
+      <div class="form-group"><label class="form-label">Branch</label><select class="form-select" id="cu-branch"><option value="">No branch</option></select></div>
+    </div>
+    <div class="g2">
+      <div class="form-group"><label class="form-label">Staff Type</label>
+        <select class="form-select" id="cu-type"><option value="casual">Casual</option><option value="reliever">Reliever</option><option value="contract">Contract</option></select>
+      </div>
+      <div class="form-group"><label class="form-label">Join Date</label><input class="form-input" type="date" id="cu-join"/></div>
+    </div>
+    <button class="btn btn-role" style="width:100%;" onclick="doCreateUser()">Create User</button>
+  </div></div>
+</div>`;}
+
+async function doCreateUser(){
+  try{
+    const res=await api('POST','/auth/register',{name:$('cu-name').value.trim(),email:$('cu-email').value.trim(),password:$('cu-pass').value,role:$('cu-role').value,branch_id:$('cu-branch').value||undefined,staff_type:$('cu-type').value,join_date:$('cu-join').value||undefined});
+    flash('cu-msg',`User "${res.data.name}" created.`,'success');
+    $('cu-name').value='';$('cu-email').value='';$('cu-pass').value='';
+  }catch(e){flash('cu-msg',e.message);}
+}
+
+function adminBranchesView(){return `<div id="view-a-branches" class="view">
+  <div class="page-head"><div><div class="page-title">Branch Management</div><div class="page-sub">Search with OpenStreetMap (Nominatim) · pick a pin on the map</div></div></div>
+  <div class="page-body"><div class="g2">
+    <div class="card">
+      <div class="card-head">Create Branch</div>
+      <div id="br-msg"></div>
+      <div class="form-group"><label class="form-label">Branch name</label><input class="form-input" id="br-name" placeholder="Nairobi CBD"/></div>
+      <div class="form-group"><label class="form-label">Search location</label>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <input class="form-input" id="br-search" placeholder="City, street, landmark…" style="flex:1;min-width:160px;" onkeydown="if(event.key==='Enter'){event.preventDefault();searchBranchGeo();}"/>
+          <button type="button" class="btn btn-primary" onclick="searchBranchGeo()">Search</button>
+        </div>
+        <div id="br-search-results"></div>
+      </div>
+      <div class="form-group"><label class="form-label">Address (from map / search)</label><input class="form-input" id="br-addr" placeholder="Resolved address"/></div>
+      <div id="br-map"></div>
+      <p style="font-size:11px;color:var(--muted);margin-top:8px;">Click the map to place or move the pin. Drag the marker to fine-tune.</p>
+      <div class="g2">
+        <div class="form-group"><label class="form-label">Latitude</label><input class="form-input" id="br-lat" type="text" readonly placeholder="—"/></div>
+        <div class="form-group"><label class="form-label">Longitude</label><input class="form-input" id="br-lon" type="text" readonly placeholder="—"/></div>
+      </div>
+      <div class="form-group"><label class="form-label">Radius (meters)</label><input class="form-input" id="br-radius" type="number" placeholder="1000" value="1000"/></div>
+      <div class="g2">
+        <div class="form-group"><label class="form-label">Default shift start</label><input class="form-input" id="br-def-start" placeholder="08:00" value="08:00"/></div>
+        <div class="form-group"><label class="form-label">Clock-in window (minutes)</label><input class="form-input" id="br-ciwin" type="number" placeholder="60" value="60" min="10" max="240"/></div>
+      </div>
+      <button class="btn btn-role" onclick="doCreateBranch()">Create Branch</button>
+    </div>
+    <div class="card"><div class="card-head">Existing Branches</div><div id="br-list"><div class="spinner"></div></div></div>
+  </div></div>
+</div>`;}
+
+async function deleteBranchBtn(el){
+  const id=el && el.getAttribute('data-bid');
+  if(!id) return;
+  if(!confirm('Delete this branch? It must have no active users assigned.')) return;
+  try{ await api('DELETE','/admin/branches/'+id); loadBranchesForAdmin(); } catch(e){ alert(e.message); }
+}
+
+async function loadBranchesForAdmin(){
+  try{
+    const res=await api('GET','/admin/branches');BRANCHES=res.data;
+    const opts=res.data.map(b=>`<option value="${b._id}">${b.name}</option>`).join('');
+    if($('cu-branch'))$('cu-branch').innerHTML=`<option value="">No branch</option>${opts}`;
+    const bl=$('br-list');if(bl)bl.innerHTML=res.data.length===0?'<p class="empty">No branches.</p>'
+      :res.data.map(b=>`<div style="padding:12px 0;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;gap:12px;align-items:flex-start;cursor:pointer;" onclick="openBranchMonitor('${b._id}')">
+          <div>
+            <div style="font-weight:700;">${escHtml(b.name)}</div>
+            <div style="font-size:12px;color:var(--muted);">${escHtml(b.address)}</div>
+            <div style="font-size:12px;color:var(--muted);">📍 ${b.latitude}, ${b.longitude} · ${b.radius_meters}m</div>
+            <div style="font-size:12px;color:var(--muted);">🕒 Default shift ${escHtml(b.default_shift_start_time||'08:00')} · clock-in window ${escHtml(String(b.clock_in_window_minutes||60))}m</div>
+          </div>
+          <button type="button" class="btn btn-danger btn-sm" data-bid="${b._id}" onclick="event.stopPropagation();deleteBranchBtn(this)">Delete</button>
+        </div>`).join('');
+  }catch(e){}
+}
+function initBranchMapIfNeeded(){
+  const el=$('br-map');
+  if(!el||typeof L==='undefined')return;
+  if(window._branchLeafletMap){window._branchLeafletMap.invalidateSize();return;}
+  const map=L.map('br-map').setView([-1.2921,36.8219],6);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',maxZoom:19}).addTo(map);
+  window._branchLeafletMap=map;
+  window._branchMarker=null;
+  map.on('click',(e)=>setBranchPin(e.latlng.lat,e.latlng.lng));
+}
+function setBranchPin(lat,lon){
+  const map=window._branchLeafletMap;
+  if(!map)return;
+  if(window._branchMarker){map.removeLayer(window._branchMarker);}
+  window._branchMarker=L.marker([lat,lon],{draggable:true}).addTo(map);
+  window._branchMarker.on('dragend',()=>{const p=window._branchMarker.getLatLng();$('br-lat').value=p.lat.toFixed(6);$('br-lon').value=p.lng.toFixed(6);});
+  $('br-lat').value=lat.toFixed(6);
+  $('br-lon').value=lon.toFixed(6);
+  map.setView([lat,lon],Math.max(map.getZoom(),14));
+}
+async function searchBranchGeo(){
+  const q=$('br-search').value.trim();
+  if(q.length<2){flash('br-msg','Enter at least 2 characters to search.','error');return;}
+  try{
+    const res=await api('GET','/admin/geo/search?'+new URLSearchParams({q}));
+    const box=$('br-search-results');
+    if(!res.data.length){box.innerHTML='<p class="empty" style="padding:8px;">No results.</p>';return;}
+    window._branchSearchResults=res.data;
+    box.innerHTML=res.data.map((r,i)=>`<button type="button" class="btn btn-ghost" style="display:block;width:100%;text-align:left;font-size:12px;margin-bottom:4px;white-space:normal;" onclick="pickBranchSearchResult(${i})">${escHtml(r.display_name)}</button>`).join('');
+  }catch(e){flash('br-msg',e.message);}
+}
+function pickBranchSearchResult(i){
+  const r=window._branchSearchResults&&window._branchSearchResults[i];
+  if(!r||Number.isNaN(r.lat)||Number.isNaN(r.lon))return;
+  $('br-addr').value=(r.display_name||'').slice(0,500);
+  initBranchMapIfNeeded();
+  setBranchPin(r.lat,r.lon);
+  $('br-search-results').innerHTML='';
+}
+async function doCreateBranch(){
+  const lat=parseFloat($('br-lat').value),lon=parseFloat($('br-lon').value);
+  if(Number.isNaN(lat)||Number.isNaN(lon)){flash('br-msg','Pick a location on the map or choose a search result.','error');return;}
+  try{
+    const dst=$('br-def-start')?.value?.trim()||'08:00';
+    const ciwin=parseInt($('br-ciwin')?.value,10)||60;
+    const res=await api('POST','/admin/branches',{
+      name:$('br-name').value.trim(),
+      address:$('br-addr').value.trim(),
+      latitude:lat,
+      longitude:lon,
+      radius_meters:parseInt($('br-radius').value,10)||1000,
+      default_shift_start_time:dst,
+      clock_in_window_minutes:ciwin
+    });
+    flash('br-msg',`Branch "${res.data.name}" created.`,'success');
+    loadBranchesForAdmin();
+  }catch(e){flash('br-msg',e.message);}
+}
+
+// Branch monitor / transfers / report (admin)
+let _BR_MONITOR_ID=null;
+function branchMonitorModal(){return `<div id="m-branch" class="overlay" style="display:none;">
+  <div class="modal">
+    <div class="modal-head">
+      <div>
+        <div class="modal-title">Branch Monitor</div>
+        <div class="modal-sub" id="mb-sub">—</div>
+      </div>
+      <button class="btn btn-ghost" onclick="closeModal('m-branch')">Close</button>
+    </div>
+    <div class="modal-body">
+      <div id="mb-msg"></div>
+      <div id="mb-body"><div class="spinner"></div></div>
+    </div>
+  </div>
+</div>`;}
+
+async function openBranchMonitor(id){
+  _BR_MONITOR_ID=id;
+  if(!$('m-branch')) document.body.insertAdjacentHTML('beforeend', branchMonitorModal());
+  $('mb-msg').innerHTML='';
+  $('mb-body').innerHTML='<div class="spinner"></div>';
+  openModal('m-branch');
+  try{
+    const m=await api('GET',`/admin/branches/${id}/monitor`);
+    const b=m.data.branch;
+    $('mb-sub').textContent = `${b.name} · ${b.address}`;
+    const w=m.data.workforce||{};
+    const t=m.data.today||{};
+    const by=t.attendance_by_status||{};
+    const stats = `<div class="g3">
+      <div class="card" style="padding:12px;"><div class="stat-lbl">Active staff</div><div class="stat-val">${w.active_staff||0}</div></div>
+      <div class="card" style="padding:12px;"><div class="stat-lbl">Active supervisors</div><div class="stat-val">${w.active_supervisors||0}</div></div>
+      <div class="card" style="padding:12px;"><div class="stat-lbl">Today attendance</div><div class="stat-val">${t.attendance_total||0}</div><div style="font-size:12px;color:var(--muted);">${Object.keys(by).map(k=>`${escHtml(k)}:${by[k]}`).join(' · ')||'—'}</div></div>
+    </div>`;
+
+    const shifts = (m.data.upcoming_shifts||[]).slice(0,10);
+    const shiftsHtml = shifts.length
+      ? `<table class="tbl"><thead><tr><th>Date</th><th>Start</th><th>Staff</th></tr></thead><tbody>`+
+        shifts.map(s=>`<tr><td>${s.shift_date}</td><td>${s.start_time}</td><td>${escHtml(s.staff_id?.name||'—')}</td></tr>`).join('')+
+        `</tbody></table>`
+      : `<p class="empty">No upcoming shifts.</p>`;
+
+    const reportBox = `<div class="card" style="margin-top:10px;">
+      <div class="card-head">Branch report</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:0 12px 12px;">
+        <input class="form-input" type="date" id="mb-from" style="width:160px;" value="${new Date(Date.now()-14*86400000).toISOString().slice(0,10)}"/>
+        <input class="form-input" type="date" id="mb-to" style="width:160px;" value="${today()}"/>
+        <button class="btn btn-primary" onclick="loadBranchReport()">Load</button>
+      </div>
+      <div id="mb-report" style="padding:0 12px 12px;"><p class="empty">Load a report.</p></div>
+    </div>`;
+
+    const transferBox = `<div class="card" style="margin-top:10px;">
+      <div class="card-head">Transfer workers</div>
+      <div style="padding:0 12px 12px;">
+        <div class="form-group"><label class="form-label">Select users (from this branch)</label>
+          <select class="form-select" id="mb-users" multiple size="6" style="width:100%;"></select>
+        </div>
+        <div class="form-group"><label class="form-label">To branch</label>
+          <select class="form-select" id="mb-to-branch"><option value="">Select…</option>${(BRANCHES||[]).map(x=>`<option value="${x._id}">${escHtml(x.name)}</option>`).join('')}</select>
+        </div>
+        <button class="btn btn-role" onclick="submitBranchTransfer()">Transfer selected</button>
+      </div>
+    </div>`;
+
+    $('mb-body').innerHTML = stats + `<div class="card" style="margin-top:10px;"><div class="card-head">Upcoming shifts</div><div style="padding:0 12px 12px;">${shiftsHtml}</div></div>` + reportBox + transferBox;
+
+    // load users for transfer list
+    const u=await api('GET',`/admin/users?branch_id=${encodeURIComponent(id)}&is_active=true`);
+    const rows=(u.data||[]).filter(x=>['staff','supervisor'].includes(x.role));
+    $('mb-users').innerHTML = rows.map(x=>`<option value="${x._id}">${escHtml(x.name)} (${escHtml(x.role)})</option>`).join('') || '<option value="">No users</option>';
+  }catch(e){flash('mb-msg',e.message);}
+}
+
+async function loadBranchReport(){
+  if(!_BR_MONITOR_ID) return;
+  const from=$('mb-from')?.value||'';
+  const to=$('mb-to')?.value||'';
+  try{
+    const r=await api('GET',`/admin/branches/${_BR_MONITOR_ID}/report?`+new URLSearchParams({from,to}));
+    const d=r.data;
+    $('mb-report').innerHTML = `<div class="g3">
+      <div class="card" style="padding:12px;"><div class="stat-lbl">Attendance records</div><div class="stat-val">${d.attendance.total_records}</div></div>
+      <div class="card" style="padding:12px;"><div class="stat-lbl">Shifts scheduled</div><div class="stat-val">${d.shifts.total_scheduled}</div></div>
+      <div class="card" style="padding:12px;"><div class="stat-lbl">Leave requests</div><div class="stat-val">${d.leave.total_requests_created}</div></div>
+    </div>
+    <div style="font-size:12px;color:var(--muted);margin-top:8px;">By status: ${Object.keys(d.attendance.by_status||{}).map(k=>`${escHtml(k)}:${d.attendance.by_status[k]}`).join(' · ')||'—'}</div>`;
+  }catch(e){$('mb-report').innerHTML=`<p style="color:var(--danger);">${e.message}</p>`;}
+}
+
+async function submitBranchTransfer(){
+  if(!_BR_MONITOR_ID) return;
+  const sel=$('mb-users');
+  const user_ids=sel?Array.from(sel.selectedOptions).map(o=>o.value).filter(Boolean):[];
+  const to_branch_id=$('mb-to-branch')?.value;
+  if(user_ids.length<1||!to_branch_id){flash('mb-msg','Select at least one user and a target branch.');return;}
+  try{
+    const r=await api('POST','/admin/branches/transfer-users',{user_ids,to_branch_id});
+    flash('mb-msg',r.message,'success');
+    // refresh monitor view
+    openBranchMonitor(_BR_MONITOR_ID);
+  }catch(e){flash('mb-msg',e.message);}
+}
+
+function adminAttView(){return `<div id="view-a-att" class="view">
+  <div class="page-head"><div><div class="page-title">Attendance Records</div><div class="page-sub">Export CSV for payroll (paid days follow casual/reliever rules; contract shows —)</div></div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
+      <input class="form-input" id="att-search" placeholder="YP Staff ID, name…" style="width:200px;" oninput="clearTimeout(window._attS);window._attS=setTimeout(loadAdminAtt,350)"/>
+      <input class="form-input" id="att-date" type="date" style="width:160px;" onchange="loadAdminAtt()"/>
+      <label style="font-size:12px;color:var(--muted);">Export month</label>
+      <input class="form-input" id="att-exp-month" type="number" min="1" max="12" style="width:64px;"/>
+      <input class="form-input" id="att-exp-year" type="number" min="2020" max="2100" style="width:88px;"/>
+      <button type="button" class="btn btn-primary" onclick="downloadAttendanceExport()">Download CSV</button>
+    </div>
+  </div>
+  <div class="page-body"><div class="card"><div id="a-att-content"><div class="spinner"></div></div></div></div>
+</div>`;}
+
+async function downloadAttendanceExport(){
+  const m=$('att-exp-month').value,y=$('att-exp-year').value;
+  const url=`${API}/admin/attendance/export?month=${encodeURIComponent(m)}&year=${encodeURIComponent(y)}`;
+  try{
+    const r=await fetch(url,{headers:{Authorization:`Bearer ${TOKEN}`},credentials:'include'});
+    const ct=r.headers.get('Content-Type')||'';
+    if(ct.includes('application/json')){
+      const j=await r.json();
+      throw new Error(j.message||'Export failed');
+    }
+    const blob=await r.blob();
+    const dispo=r.headers.get('Content-Disposition')||'';
+    const fnMatch=dispo.match(/filename="?([^";]+)"?/);
+    const fn=fnMatch?fnMatch[1]:`attendance-export-${y}-${m}.csv`;
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download=fn;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }catch(e){alert(e.message);}
+}
+
+async function loadAdminAtt(){
+  const d=$('att-date')?.value||today();
+  const s=$('att-search')?.value?.trim();
+  try{
+    let path=`/admin/attendance?date=${encodeURIComponent(d)}`;
+    if(s) path += '&search='+encodeURIComponent(s);
+    const res=await api('GET',path);
+    if(!res.data.length){$('a-att-content').innerHTML='<p class="empty">No records.</p>';return;}
+    const bm={present:'b-present',late:'b-late',absent:'b-absent',leave:'b-leave',forced:'b-forced'};
+    $('a-att-content').innerHTML=`<table class="tbl"><thead><tr><th>YP Staff ID</th><th>Staff</th><th>Date</th><th>In</th><th>Out</th><th>Status</th><th>Notes</th><th>Edit</th></tr></thead>
+      <tbody>${res.data.map(r=>`<tr>
+        <td style="font-family:monospace;font-size:11px;font-weight:600;">${escHtml(r.yp_staff_id||'—')}</td>
+        <td style="font-weight:700;">${r.staff_id?.name||'—'}</td>
+        <td style="font-size:12px;">${r.date}</td>
+        <td>${ft(r.clock_in)}</td>
+        <td>${ft(r.clock_out)}${r.auto_clocked_out?' <span class="tag">auto</span>':''}</td>
+        <td><span class="badge ${bm[r.status]||''}">${r.status}</span></td>
+        <td style="font-size:11px;color:var(--muted);max-width:140px;">${r.notes||'—'}</td>
+        <td><button class="btn btn-warning btn-sm" onclick="openAttEdit('${r._id}','${r.clock_in||''}','${r.clock_out||''}')">Edit</button></td>
+      </tr>`).join('')}</tbody></table>`;
+  }catch(e){$('a-att-content').innerHTML=`<p style="color:var(--danger);">${e.message}</p>`;}
+}
+
+function openAttEdit(id,cin,cout){
+  PENDING_ATT_ID=id;
+  $('m-att-in').value=cin?new Date(cin).toISOString().slice(0,16):'';
+  $('m-att-out').value=cout?new Date(cout).toISOString().slice(0,16):'';
+  $('m-att-reason').value='';$('m-att-msg').innerHTML='';openModal('m-att');
+}
+async function submitAttEdit(){
+  const reason=$('m-att-reason').value.trim();
+  if(!reason){flash('m-att-msg','Reason required.');return;}
+  try{await api('PATCH',`/admin/attendance/${PENDING_ATT_ID}`,{clock_in:$('m-att-in').value||undefined,clock_out:$('m-att-out').value||undefined,reason});closeModal('m-att');loadAdminAtt();}catch(e){flash('m-att-msg',e.message);}
+}
+
+function adminLeaveView(){return `<div id="view-a-leave" class="view">
+  <div class="page-head"><div><div class="page-title">Leave Management</div></div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
+    <input class="form-input" id="a-lq" placeholder="YP Staff ID, name…" style="width:200px;" oninput="clearTimeout(window._alS);window._alS=setTimeout(loadAdminLeave,350)"/>
+    <select class="form-select" id="a-lf" style="width:160px;" onchange="loadAdminLeave()">
+      <option value="">All</option><option value="pending">Pending</option><option value="pending_document">Awaiting Doc</option><option value="approved">Approved</option><option value="rejected">Rejected</option>
+    </select>
+    </div>
+  </div>
+  <div class="page-body"><div class="card"><div id="a-leave-content"><div class="spinner"></div></div></div></div>
+</div>`;}
+
+async function loadAdminLeave(){
+  const s=$('a-lf')?.value||'';
+  const q=$('a-lq')?.value?.trim();
+  try{
+    const p=new URLSearchParams();
+    if(s) p.set('status',s);
+    if(q) p.set('search',q);
+    const qs=p.toString();
+    const res=await api('GET',`/admin/leave${qs?'?'+qs:''}`);
+    const sc={pending:'b-pending',pending_document:'b-pdoc',approved:'b-approved',rejected:'b-rejected'};
+    $('a-leave-content').innerHTML=res.data.length===0?'<p class="empty">No requests.</p>'
+      :`<table class="tbl"><thead><tr><th>YP Staff ID</th><th>Staff</th><th>Type</th><th>Dates</th><th>Days</th><th>Status</th><th>Doc</th><th>Actions</th></tr></thead>
+        <tbody>${res.data.map(l=>`<tr>
+          <td style="font-family:monospace;font-size:11px;font-weight:600;">${escHtml(l.yp_staff_id||'—')}</td>
+          <td style="font-weight:700;">${l.staff_id?.name||'—'}</td>
+          <td style="text-transform:capitalize;">${l.type.replace(/_/g,' ')}</td>
+          <td style="white-space:nowrap;font-size:12px;">${fd(l.start_date)} – ${fd(l.end_date)}</td>
+          <td>${l.days_requested}</td>
+          <td><span class="badge ${sc[l.status]||''}">${l.status.replace(/_/g,' ')}</span></td>
+          <td>${l.medical_document?`<a href="/uploads/${l.medical_document}" target="_blank" style="color:var(--accent);">View</a>`:'—'}</td>
+          <td style="display:flex;gap:5px;">
+            ${['pending','pending_document'].includes(l.status)?`
+              <button class="btn btn-success btn-sm" onclick="adminLeaveAction('${l._id}','approve')">Approve</button>
+              <button class="btn btn-danger btn-sm" onclick="openReject('${l._id}','admin')">Reject</button>`:'—'}
+          </td>
+        </tr>`).join('')}</tbody></table>`;
+  }catch(e){$('a-leave-content').innerHTML=`<p style="color:var(--danger);">${e.message}</p>`;}
+}
+async function adminLeaveAction(id,action){try{await api('PATCH',`/admin/leave/${id}/${action}`);loadAdminLeave();}catch(e){alert(e.message);}}
+
+function adminPayrollView(){return `<div id="view-a-payroll" class="view">
+  <div class="page-head"><div><div class="page-title">Payroll Control</div></div></div>
+  <div class="page-body"><div class="card"><div id="a-payroll-content"><div class="spinner"></div></div></div></div>
+</div>`;}
+
+async function loadAdminPayroll(){
+  try{
+    const res=await api('GET','/admin/users?role=staff&include_profile=true');
+    $('a-payroll-content').innerHTML=res.data.length===0?'<p class="empty">No staff.</p>'
+      :`<table class="tbl"><thead><tr><th>YP Staff ID</th><th>Name</th><th>Branch</th><th>Current Rate</th><th>Action</th></tr></thead>
+        <tbody>${res.data.map(u=>`<tr>
+          <td style="font-family:monospace;font-size:11px;font-weight:600;">${escHtml(u.staff_profile?.staff_id||'—')}</td>
+          <td style="font-weight:700;">${u.name}</td>
+          <td style="font-size:12px;">${u.branch_id?.name||'—'}</td>
+          <td style="font-size:13px;color:var(--success);font-weight:700;">KES —/day</td>
+          <td><button class="btn btn-primary btn-sm" onclick="openPayModal('${u._id}','${u.name}')">Set Rate</button></td>
+        </tr>`).join('')}</tbody></table>`;
+  }catch(e){$('a-payroll-content').innerHTML=`<p style="color:var(--danger);">${e.message}</p>`;}
+}
+
+function openPayModal(id,name){PENDING_PAY_ID=id;$('m-pay-name').textContent=`Setting rate for: ${name}`;$('m-pay-rate').value='';openModal('m-pay');}
+async function submitPayRate(){
+  try{await api('PATCH',`/admin/users/${PENDING_PAY_ID}/pay-rate`,{rate:parseFloat($('m-pay-rate').value)});closeModal('m-pay');loadAdminPayroll();}catch(e){alert(e.message);}
+}
+
+function adminUniformsView(){return `<div id="view-a-uniforms" class="view">
+  <div class="page-head"><div><div class="page-title">Uniform Management</div></div></div>
+  <div class="page-body">
+    <div class="g2">
+    <div class="card">
+      <div class="card-head">Issue Uniform</div>
+      <div id="uni-msg"></div>
+      <div class="form-group"><label class="form-label">Staff Member</label><select class="form-select" id="uni-staff"><option value="">Select…</option></select></div>
+      <div class="form-group"><label class="form-label">Item Type</label>
+        <select class="form-select" id="uni-type"><option value="shirt">Shirt</option><option value="boots">Boots</option><option value="trousers">Trousers</option><option value="jacket">Jacket</option><option value="hat">Hat</option></select>
+      </div>
+      <div class="form-group"><label class="form-label">Size</label><input class="form-input" id="uni-size" placeholder="L / 42"/></div>
+      <button class="btn btn-role" onclick="doIssueUniform()">Issue Uniform</button>
+    </div>
+    <div class="card"><div class="card-head">Policy</div><p style="font-size:13px;color:var(--muted);">One active item per type per staff member. Overdue returns (&gt;365 days active) and lost items are highlighted. Use the grid to return or request replacement.</p></div>
+    </div>
+    <div class="card" style="margin-top:20px;">
+      <div class="card-head">Uniform grid</div>
+      <div class="g2" style="margin-bottom:12px;">
+        <div class="form-group"><label class="form-label">Branch</label><select class="form-select" id="uni-f-branch" onchange="loadUniformGrid()"><option value="">All branches</option></select></div>
+        <div class="form-group"><label class="form-label">Item</label><select class="form-select" id="uni-f-type" onchange="loadUniformGrid()"><option value="">All</option><option value="shirt">Shirt</option><option value="boots">Boots</option><option value="trousers">Trousers</option><option value="jacket">Jacket</option><option value="hat">Hat</option></select></div>
+        <div class="form-group"><label class="form-label">Search</label><input class="form-input" id="uni-f-search" placeholder="YP Staff ID or name" oninput="clearTimeout(window._uniS);window._uniS=setTimeout(loadUniformGrid,350)"/></div>
+      </div>
+      <div id="uni-grid-wrap"><div class="spinner"></div></div>
+    </div>
+  </div>
+</div>`;}
+
+async function loadUniformStaffSelect(){
+  try{
+    const res=await api('GET','/admin/users?role=staff&is_active=true&include_profile=true');
+    const opts=res.data.map(u=>{
+      const yp=u.staff_profile?.staff_id;
+      const lab=yp?`${u.name} · ${yp}`:u.name;
+      return `<option value="${u._id}">${escHtml(lab)}</option>`;
+    }).join('');
+    if($('uni-staff'))$('uni-staff').innerHTML=`<option value="">Select…</option>${opts}`;
+  }catch(e){}
+}
+
+async function doIssueUniform(){
+  try{
+    const r=await api('POST','/admin/uniforms/issue',{staff_id:$('uni-staff').value,item_type:$('uni-type').value,size:$('uni-size').value});
+    flash('uni-msg',r.message,'success');$('uni-size').value='';
+    loadUniformGrid();
+  }catch(e){flash('uni-msg',e.message);}
+}
+
+const UNI_LABEL={shirt:'Shirt',boots:'Boots',trousers:'Trousers',jacket:'Jacket',hat:'Hat'};
+async function loadUniformGrid(){
+  const wrap=$('uni-grid-wrap');
+  if(!wrap)return;
+  try{
+    const fb=$('uni-f-branch');
+    if(fb&&BRANCHES.length&&(fb.options.length<=1)){
+      fb.innerHTML='<option value="">All branches</option>'+BRANCHES.map(b=>`<option value="${b._id}">${b.name}</option>`).join('');
+    }
+    const bid=$('uni-f-branch')?$('uni-f-branch').value:'';
+    const typ=$('uni-f-type')?$('uni-f-type').value:'';
+    const us=$('uni-f-search')?$('uni-f-search').value.trim():'';
+    let path='/admin/uniforms/grid?';
+    if(bid)path+='branch_id='+encodeURIComponent(bid)+'&';
+    if(typ)path+='item_type='+encodeURIComponent(typ)+'&';
+    if(us)path+='search='+encodeURIComponent(us)+'&';
+    const res=await api('GET',path);
+    if(!res.data.length){wrap.innerHTML='<p class="empty">No rows match filters.</p>';return;}
+    wrap.innerHTML=`<div style="overflow-x:auto;"><table class="tbl"><thead><tr><th>YP Staff ID</th><th>Staff</th><th>Branch</th><th>Item</th><th>Size</th><th>Status</th><th>Issued</th><th>Returned</th><th>Flags</th><th>Actions</th></tr></thead><tbody>
+      ${res.data.map(u=>{
+        const st=u.staff_id||{};
+        const br=st.branch_id&&st.branch_id.name?st.branch_id.name:'—';
+        const nm=st.name||'—';
+        const yp=u.yp_staff_id||'—';
+        const risk=u.needs_attention?'background:rgba(255,77,109,0.07);':'';
+        let flags='';
+        if(u.overdue_return)flags+='<span class="tag" style="background:var(--warning);color:#111;">Overdue</span> ';
+        if(u.status==='lost')flags+='<span class="tag" style="background:var(--danger);">Damaged/lost</span> ';
+        if(u.status==='replacement_pending')flags+='<span class="tag" style="background:var(--warning);color:#111;">Replacement</span>';
+        if(!flags.trim())flags='—';
+        let actions='—';
+        if(u.status==='active'){
+          actions=`<button type="button" class="btn btn-ghost btn-sm" onclick="uniformMarkReturned('${u._id}')">Returned</button> <button type="button" class="btn btn-warning btn-sm" onclick="uniformRequestReplacement('${u._id}')">Replacement</button>`;
+        }
+        return`<tr style="${risk}"><td style="font-family:monospace;font-size:11px;font-weight:600;">${escHtml(String(yp))}</td><td style="font-weight:700;">${escHtml(nm)}</td><td style="font-size:12px;">${escHtml(br)}</td><td>${UNI_LABEL[u.item_type]||u.item_type}</td><td>${u.size||'—'}</td><td style="text-transform:capitalize;">${(u.status||'').replace(/_/g,' ')}</td><td style="font-size:12px;">${fd(u.issued_date)}</td><td style="font-size:12px;">${u.returned_date?fd(u.returned_date):'—'}</td><td style="font-size:11px;">${flags}</td><td style="white-space:nowrap;">${actions}</td></tr>`;
+      }).join('')}</tbody></table></div>`;
+  }catch(e){wrap.innerHTML=`<p style="color:var(--danger);">${e.message}</p>`;}
+}
+async function uniformMarkReturned(id){
+  if(!confirm('Mark this uniform as returned?'))return;
+  try{await api('PATCH',`/admin/uniforms/${id}/return`);loadUniformGrid();}catch(e){alert(e.message);}
+}
+async function uniformRequestReplacement(id){
+  const reason=prompt('Reason for replacement (optional):')||'';
+  try{await api('PATCH',`/admin/uniforms/${id}/replacement`,{reason});loadUniformGrid();}catch(e){alert(e.message);}
+}
+
+function adminNotifyView(){return `<div id="view-a-notify" class="view">
+  <div class="page-head"><div><div class="page-title">Broadcast Message</div></div></div>
+  <div class="page-body"><div class="card" style="max-width:540px;">
+    <div id="a-notify-msg"></div>
+    <div class="form-group"><label class="form-label">Message (max 500 chars)</label><textarea class="form-textarea" id="a-bcast-txt" maxlength="500" placeholder="System-wide announcement…"></textarea></div>
+    <div class="g2">
+      <div class="form-group"><label class="form-label">Target Role</label>
+        <select class="form-select" id="a-bcast-role"><option value="">All roles</option><option value="staff">Staff</option><option value="supervisor">Supervisors</option><option value="admin">Admins</option></select>
+      </div>
+      <div class="form-group"><label class="form-label">Type</label>
+        <select class="form-select" id="a-bcast-type"><option value="broadcast">Broadcast</option><option value="warning">Warning</option><option value="info">Info</option></select>
+      </div>
+    </div>
+    <button class="btn btn-role" onclick="doAdminBroadcast()">Send Broadcast</button>
+  </div></div>
+</div>`;}
+
+async function doAdminBroadcast(){
+  const msg=$('a-bcast-txt').value.trim();
+  if(!msg){flash('a-notify-msg','Message required.');return;}
+  try{const r=await api('POST','/admin/notify',{message:msg,role:$('a-bcast-role').value||undefined,type:$('a-bcast-type').value});flash('a-notify-msg',r.message,'success');$('a-bcast-txt').value='';}catch(e){flash('a-notify-msg',e.message);}
+}
+
+// ════════════════════════════════════════════════════════════════
+//  SHARED: Leave reject modal
+// ════════════════════════════════════════════════════════════════
+let REJECT_ROLE = 'admin';
+function openReject(id, role) {
+  PENDING_REJECT_ID=id; REJECT_ROLE=role||'admin';
+  $('m-reject-reason').value='';$('m-reject-msg').innerHTML='';openModal('m-reject');
+}
+async function submitReject(){
+  const reason=$('m-reject-reason').value.trim();
+  if(!reason){flash('m-reject-msg','Reason required.');return;}
+  const endpoint=REJECT_ROLE==='admin'?`/admin/leave/${PENDING_REJECT_ID}/reject`:`/supervisor/leave/${PENDING_REJECT_ID}/reject`;
+  try{await api('PATCH',endpoint,{reason});closeModal('m-reject');if(REJECT_ROLE==='admin')loadAdminLeave();else loadSvLeave();}catch(e){flash('m-reject-msg',e.message);}
+}
+
+// ════════════════════════════════════════════════════════════════
+//  VIEW LAZY LOADERS — called when nav item clicked
+// ════════════════════════════════════════════════════════════════
+const origShow = showView;
+window.showView = function(name, el) {
+  origShow(name, el);
+  // Staff lazy loads
+  if(name==='s-dash')    loadStaffDash();
+  if(name==='s-clock')   loadAttHistory();
+  if(name==='s-leave')   loadLeaveData();
+  if(name==='s-pay')     loadPay();
+  if(name==='s-uniform') loadUniform();
+  if(name==='s-notifs')  loadNotifications();
+  if(name==='s-profile') loadProfile();
+  // Supervisor
+  if(name==='sv-att')    loadSvAtt();
+  if(name==='sv-leave')  loadSvLeave();
+  if(name==='sv-msg')    { loadSvMsgDropdown(); }
+  if(name==='sv-shifts') loadSvShifts();
+  if(name==='s-shifts')  loadStaffShifts();
+  // Admin
+  if(name==='a-analytics'){ AN_PAGE=1; loadAdminAnalytics(); }
+  if(name==='a-reports') loadAdminReportsPage();
+  if(name==='a-sec')     loadSec();
+  if(name==='a-audit')   loadAudit();
+  if(name==='a-sessions')loadSessions();
+  if(name==='a-users')   loadUsers();
+  if(name==='a-shifts')  loadAdminShifts();
+  if(name==='a-branches'){loadBranchesForAdmin();setTimeout(()=>initBranchMapIfNeeded(),120);}
+  if(name==='a-att')     {
+    const n=new Date();
+    $('att-date').value=today();
+    if($('att-exp-month'))$('att-exp-month').value=String(n.getMonth()+1);
+    if($('att-exp-year'))$('att-exp-year').value=String(n.getFullYear());
+    loadAdminAtt();
+  }
+  if(name==='a-leave')   loadAdminLeave();
+  if(name==='a-lacc')    loadLeaveAccrualReport();
+  if(name==='a-payroll') loadAdminPayroll();
+  if(name==='a-contracts')loadAdminContracts();
+  if(name==='a-uniforms'){loadUniformStaffSelect();loadUniformGrid();}
+};
+
+// ════════════════════════════════════════════════════════════════
+//  TOKEN AUTO-REFRESH
+// ════════════════════════════════════════════════════════════════
+function startRefresh() {
+  setInterval(async ()=>{
+    try {
+      const payload = TOKEN ? JSON.parse(atob(TOKEN.split('.')[1])) : null;
+      if(!payload) return;
+      const bar=$('session-bar'); bar.classList.add('active');
+      const res=await fetch(`${API}/auth/refresh`,{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_id:payload.id})});
+      const j=await res.json();
+      if(j.access_token){TOKEN=j.access_token;localStorage.setItem('wms_token',TOKEN);}
+      setTimeout(()=>bar.classList.remove('active'),800);
+    }catch(e){}
+  }, 13*60*1000);
+}
+
+// ════════════════════════════════════════════════════════════════
+//  BOOT — re-auth if token exists
+// ════════════════════════════════════════════════════════════════
+(function startTypingHero(){
+  const lines = ['Clock In Seamlessly...','Track Attendance...','Manage Teams Efficiently...'];
+  let li = 0, ch = 0, del = false;
+  function step() {
+    const el = $('hero-typing');
+    if (!el) return;
+    const full = lines[li];
+    if (!del) {
+      ch += 1;
+      el.textContent = full.slice(0, ch);
+      if (ch === full.length) { del = true; setTimeout(step, 1800); return; }
+    } else {
+      ch -= 1;
+      el.textContent = full.slice(0, ch);
+      if (ch === 0) { del = false; li = (li + 1) % lines.length; }
+    }
+    setTimeout(step, del ? 28 : 42);
+  }
+  setTimeout(step, 400);
+})();
+
+function isLoginPath() {
+  const p = (window.location.pathname || '/').replace(/\/+$/, '') || '/';
+  return p === '/login' || p.endsWith('/login');
+}
+
+(function bootPublicEntry() {
+  if (TOKEN) {
+    $('stage-landing').style.display = 'none';
+    $('stage-auth').style.display = 'none';
+    api('GET','/auth/me').then(r => { ME = r.data; initShell(); }).catch(doLogout);
+    return;
+  }
+  /* Direct link: http://localhost:5000/login → full sign-in page (no hero) */
+  if (isLoginPath()) {
+    $('stage-landing').style.display = 'none';
+    $('stage-auth').style.display = 'flex';
+    switchAuthTab('login');
+    return;
+  }
+  loadLandingStats();
+})();
+</script>
+</body>
+</html>
