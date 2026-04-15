@@ -57,6 +57,7 @@ app.use("/api/auth", require("./routes/auth"));
 app.use("/api/admin", require("./routes/admin"));
 app.use("/api/admin", require("./routes/promotionAdmin"));
 app.use("/api/supervisor", require("./routes/supervisor"));
+app.use("/api/general-supervisor", require("./routes/generalSupervisor"));
 app.use("/api/staff", require("./routes/staff"));
 app.use("/api/attendance", require("./routes/attendance"));
 app.use("/api/leave", require("./routes/leave"));
@@ -132,6 +133,7 @@ mongoose
 
     io.on("connection", (socket) => {
       if (socket.user.role === "admin") socket.join("admins");
+      if (socket.user.role === "general_supervisor") socket.join("general_supervisors");
       socket.join(`user:${socket.user._id.toString()}`);
       if (socket.user.branch_id) socket.join(`branch:${socket.user.branch_id.toString()}`);
     });

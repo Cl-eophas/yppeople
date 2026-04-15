@@ -124,6 +124,7 @@ router.post(
 
 router.get("/attendance", guard, admin.getAllAttendance);
 router.get("/attendance/forced-clock-requests", guard, admin.getForcedClockRequests);
+router.get("/attendance/forced-clockout-requests", guard, admin.getForcedClockOutRequests);
 router.put(
   "/attendance/forced-clock-requests/:id/approve",
   guard,
@@ -137,6 +138,20 @@ router.put(
   [param("id").isMongoId(), body("note").trim().isLength({ min: 2, max: 500 })],
   validate,
   admin.rejectForcedClockRequest
+);
+router.put(
+  "/attendance/forced-clockout-requests/:id/approve",
+  guard,
+  [param("id").isMongoId(), body("note").optional().trim().isLength({ max: 500 })],
+  validate,
+  admin.approveForcedClockOutRequest
+);
+router.put(
+  "/attendance/forced-clockout-requests/:id/reject",
+  guard,
+  [param("id").isMongoId(), body("note").trim().isLength({ min: 2, max: 500 })],
+  validate,
+  admin.rejectForcedClockOutRequest
 );
 router.get(
   "/attendance/export",

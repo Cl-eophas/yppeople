@@ -116,10 +116,21 @@ exports.clockIn = async (req, res) => {
           escalatedUsers.map((u) => ({
             user_id: u._id,
             type: "attendance",
-            message: `Late alert: ${user.name} (${user.phone || "no phone"}) is ${lateMinutes} minute(s) late.`,
+            message: `Late alert: ${user.name} (${user.phone || "no phone"}) is ${lateMinutes} minute(s) late — ${branch.name}.`,
           }))
         );
       }
+
+      const { emitLateAlert } = require("../realtime");
+      emitLateAlert({
+        date: today,
+        branch_id: branch._id,
+        branch_name: branch.name,
+        staff_id: user._id,
+        staff_name: user.name,
+        phone: user.phone || null,
+        minutes_late: lateMinutes,
+      });
 
       await SecurityEvent.create({
         type: "anomalous_action",

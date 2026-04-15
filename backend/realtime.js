@@ -27,3 +27,14 @@ exports.emitUserStatusChanged = (payload) => {
     console.error("[emitUserStatusChanged]", e.message);
   }
 };
+
+exports.emitLateAlert = (payload) => {
+  if (!io) return;
+  try {
+    io.to("general_supervisors").emit("attendance:late", payload);
+    io.to("admins").emit("attendance:late", payload);
+    if (payload?.branch_id) io.to(`branch:${payload.branch_id.toString()}`).emit("attendance:late", payload);
+  } catch (e) {
+    console.error("[emitLateAlert]", e.message);
+  }
+};

@@ -5,15 +5,14 @@ const { authenticate, requireRole } = require("../middleware/auth");
 const { validate } = require("../middleware/validate");
 const sup = require("../controllers/supervisorController");
 
-const guard = [authenticate, requireRole("supervisor", "general_supervisor", "admin")];
+// Strict RBAC: supervisors only. No overlap with general supervisor.
+const guard = [authenticate, requireRole("supervisor")];
 
 router.get("/dashboard", guard, sup.getDashboard);
 router.get("/staff", guard, sup.getBranchStaff);
 router.get("/attendance/today", guard, sup.getTodayAttendance);
 router.get("/leave", guard, sup.getBranchLeave);
 router.get("/contacts", guard, sup.getTeamContacts);
-router.get("/meetings", guard, sup.getMeetings);
-router.get("/uniforms/history", guard, sup.getUniformHistory);
 
 router.post(
   "/attendance/manual-entry",
@@ -24,11 +23,11 @@ router.post(
 );
 
 router.post(
-  "/attendance/force-clockout",
+  "/attendance/force-clockout/request",
   guard,
   [body("staff_id").notEmpty(), body("reason").notEmpty()],
   validate,
-  sup.forceClockOut
+  sup.requestForceClockOut
 );
 
 router.patch(
@@ -56,31 +55,14 @@ router.post(
 );
 
 router.post(
-  "/meetings",
+  "/attendance/force-clockin/request",
   guard,
-  [
-    body("title").trim().isLength({ min: 3, max: 160 }),
-    body("agenda").trim().isLength({ min: 5, max: 4000 }),
-    body("scheduled_for").isISO8601(),
-    body("branch_id").optional().isMongoId(),
-    body("participant_ids").optional().isArray(),
-    body("participant_ids.*").optional().isMongoId(),
-  ],
+  [body("staff_id").isMongoId(), body("reason").trim().isLength({ min: 5, max: 500 })],
   validate,
-  sup.scheduleMeeting
+  sup.requestForceClockIn
 );
 
-router.post(
-  "/uniforms/assign",
-  guard,
-  [
-    body("staff_id").isMongoId(),
-    body("item_type").isIn(["shirt", "boots", "trousers", "jacket", "hat"]),
-    body("size").optional().isString().isLength({ min: 1, max: 20 }),
-    body("item_description").optional().isString().isLength({ max: 300 }),
-  ],
-  validate,
-  sup.assignUniform
-);
+router.get("/attendance", guard, sup.getAttendance);
+router.get("/late", guard, sup.getLateStaff);
 
 module.exports = router;

@@ -4,22 +4,16 @@ const Attendance = require("../models/Attendance");
 const Leave = require("../models/Leave");
 const Notification = require("../models/Notification");
 const LeaveBalance = require("../models/LeaveBalance");
-const Uniform = require("../models/Uniform");
-const Meeting = require("../models/Meeting");
+const ForceClockRequest = require("../models/ForceClockRequest");
+const ForceClockOutRequest = require("../models/ForceClockOutRequest");
 const AuditLog = require("../models/AuditLog");
-const { sendMail } = require("../utils/mailer");
 const { getTodayString } = require("../utils/dateHelpers");
 const { contractStaffMayWork } = require("../utils/contractCheck");
 const { emitAttendanceChanged } = require("../realtime");
 const getIP = (req) => req.ip || req.headers["x-forwarded-for"]?.split(",")[0] || "unknown";
 const getUA = (req) => req.headers["user-agent"] || "unknown";
 
-const getBranchScope = (req) => {
-  if (["general_supervisor", "admin"].includes(req.user.role)) {
-    return req.query.branch_id ? { branch_id: req.query.branch_id } : {};
-  }
-  return req.user.branch_id ? { branch_id: req.user.branch_id } : null;
-};
+const getBranchScope = (req) => (req.user.branch_id ? { branch_id: req.user.branch_id } : null);
 
 const getContactLinks = (phone) => {
   const normalized = String(phone || "").replace(/\s+/g, "");
@@ -221,55 +215,81 @@ exports.manualClockIn = async (req, res) => {
   }
 };
 
-// ─── POST /supervisor/attendance/force-clockout ───────────────
-exports.forceClockOut = async (req, res) => {
+// ─── Requests: supervisor submits, admin approves ───────────────
+exports.requestForceClockIn = async (req, res) => {
   try {
     const { staff_id, reason } = req.body;
-    if (!staff_id || !reason) {
-      return res.status(400).json({ success: false, message: "staff_id and reason required." });
-    }
-
     const scope = getBranchScope(req);
     if (!scope) return res.status(400).json({ success: false, message: "Supervisor not assigned to a branch." });
-    const staffUser = await User.findOne({ _id: staff_id, ...scope, role: "staff" });
-    if (!staffUser) {
-      return res.status(403).json({ success: false, message: "Staff not in your branch." });
-    }
+
+    const staffUser = await User.findOne({ _id: staff_id, ...scope, role: "staff", is_active: true }).select("_id name branch_id");
+    if (!staffUser) return res.status(403).json({ success: false, message: "Staff not in your branch." });
 
     const today = getTodayString();
-    const record = await Attendance.findOne({ staff_id, date: today });
-    if (!record?.clock_in) {
-      return res.status(400).json({ success: false, message: "No clock-in record for today." });
-    }
-    if (record.clock_out) {
-      return res.status(400).json({ success: false, message: "Already clocked out." });
-    }
+    const att = await Attendance.findOne({ staff_id, date: today });
+    if (att?.clock_in) return res.status(400).json({ success: false, message: "Staff already clocked in today." });
 
-    const now = new Date();
-    record.clock_out = now;
-    record.is_forced = true;
-    record.notes = (record.notes ? `${record.notes} | ` : "") + `Force clock-out by supervisor: ${reason}`;
-    await record.save();
+    const existingPending = await ForceClockRequest.findOne({ user_id: staff_id, date: today, status: "pending" });
+    if (existingPending) return res.status(400).json({ success: false, message: "A forced clock-in request is already pending." });
+
+    const reqDoc = await ForceClockRequest.create({
+      user_id: staff_id,
+      branch_id: staffUser.branch_id || null,
+      date: today,
+      reason: String(reason || "").trim(),
+      status: "pending",
+    });
 
     await Notification.create({
       user_id: staff_id,
-      message: `Supervisor clocked you out at ${now.toLocaleTimeString()}. Reason: ${reason}`,
       type: "attendance",
+      message: "Supervisor submitted a forced clock-in request for you (pending admin approval).",
     });
-    await writeAudit(
-      "SUPERVISOR_FORCE_CLOCKOUT",
-      req,
-      record._id,
-      "attendance",
-      null,
-      { staff_id, date: today, reason }
-    );
 
-    if (staffUser.branch_id) emitAttendanceChanged({ branch_id: staffUser.branch_id, date: today });
-
-    res.json({ success: true, message: "Force clock-out recorded.", data: record });
+    await writeAudit("SUPERVISOR_REQUEST_FORCED_CLOCKIN", req, reqDoc._id, "attendance", null, { staff_id, date: today });
+    return res.status(201).json({ success: true, message: "Forced clock-in request submitted.", data: reqDoc });
   } catch (err) {
-    res.status(500).json({ success: false, message: "Server error." });
+    console.error("[requestForceClockIn]", err);
+    return res.status(500).json({ success: false, message: "Server error." });
+  }
+};
+
+exports.requestForceClockOut = async (req, res) => {
+  try {
+    const { staff_id, reason } = req.body;
+    const scope = getBranchScope(req);
+    if (!scope) return res.status(400).json({ success: false, message: "Supervisor not assigned to a branch." });
+
+    const staffUser = await User.findOne({ _id: staff_id, ...scope, role: "staff", is_active: true }).select("_id name branch_id");
+    if (!staffUser) return res.status(403).json({ success: false, message: "Staff not in your branch." });
+
+    const today = getTodayString();
+    const record = await Attendance.findOne({ staff_id, date: today });
+    if (!record?.clock_in) return res.status(400).json({ success: false, message: "No clock-in record for today." });
+    if (record.clock_out) return res.status(400).json({ success: false, message: "Already clocked out." });
+
+    const existingPending = await ForceClockOutRequest.findOne({ user_id: staff_id, date: today, status: "pending" });
+    if (existingPending) return res.status(400).json({ success: false, message: "A forced clock-out request is already pending." });
+
+    const reqDoc = await ForceClockOutRequest.create({
+      user_id: staff_id,
+      branch_id: staffUser.branch_id || null,
+      date: today,
+      reason: String(reason || "").trim(),
+      status: "pending",
+    });
+
+    await Notification.create({
+      user_id: staff_id,
+      type: "attendance",
+      message: "Supervisor submitted a forced clock-out request for you (pending admin approval).",
+    });
+
+    await writeAudit("SUPERVISOR_REQUEST_FORCED_CLOCKOUT", req, reqDoc._id, "attendance", null, { staff_id, date: today });
+    return res.status(201).json({ success: true, message: "Forced clock-out request submitted.", data: reqDoc });
+  } catch (err) {
+    console.error("[requestForceClockOut]", err);
+    return res.status(500).json({ success: false, message: "Server error." });
   }
 };
 
@@ -474,139 +494,99 @@ exports.getTeamContacts = async (req, res) => {
   }
 };
 
-exports.scheduleMeeting = async (req, res) => {
-  try {
-    const { title, agenda, scheduled_for, branch_id, participant_ids } = req.body;
-    const when = new Date(scheduled_for);
-    if (Number.isNaN(when.getTime()) || when <= new Date()) {
-      return res.status(400).json({ success: false, message: "scheduled_for must be a future datetime." });
-    }
-
-    const meeting = await Meeting.create({
-      title: String(title).trim(),
-      agenda: String(agenda).trim(),
-      scheduled_for: when,
-      branch_id: branch_id || null,
-      created_by: req.user._id,
-      participants: Array.isArray(participant_ids) ? participant_ids : [],
-    });
-
-    const participants = await User.find({ _id: { $in: meeting.participants } }).select("_id name email");
-    if (participants.length) {
-      await Notification.insertMany(
-        participants.map((p) => ({
-          user_id: p._id,
-          type: "meeting",
-          message: `Meeting scheduled: "${meeting.title}" on ${when.toLocaleString()}.`,
-        }))
-      );
-      await Promise.all(
-        participants.map((p) =>
-          sendMail({
-            to: p.email,
-            subject: `Meeting: ${meeting.title}`,
-            html: `<p>Hello ${p.name},</p><p>You have a meeting scheduled on ${when.toLocaleString()}.</p><p><strong>${meeting.title}</strong></p><p>${meeting.agenda}</p>`,
-            text: `Hello ${p.name},\n\nYou have a meeting scheduled on ${when.toLocaleString()}.\n\n${meeting.title}\n${meeting.agenda}\n`,
-          })
-        )
-      );
-    }
-
-    await writeAudit(
-      "SCHEDULE_MEETING",
-      req,
-      meeting._id,
-      "meeting",
-      null,
-      { title: meeting.title, scheduled_for: meeting.scheduled_for, participants: meeting.participants.length }
-    );
-
-    return res.status(201).json({ success: true, message: "Meeting scheduled.", data: meeting });
-  } catch (err) {
-    console.error("[scheduleMeeting]", err);
-    return res.status(500).json({ success: false, message: "Server error." });
-  }
+const parseYMD = (s) => {
+  if (!s || !/^\d{4}-\d{2}-\d{2}$/.test(String(s))) return null;
+  const d = new Date(`${s}T00:00:00`);
+  return Number.isNaN(d.getTime()) ? null : d;
 };
 
-exports.getMeetings = async (req, res) => {
+const formatYMD = (d) => d.toISOString().slice(0, 10);
+
+exports.getAttendance = async (req, res) => {
   try {
     const scope = getBranchScope(req);
     if (!scope) return res.status(400).json({ success: false, message: "Supervisor not assigned to a branch." });
 
-    const query = {};
-    if (scope.branch_id) query.branch_id = scope.branch_id;
-    if (req.query.status) query.status = req.query.status;
+    const period = String(req.query.period || "today");
+    const base = parseYMD(req.query.date) || new Date();
+    let from;
+    let to;
 
-    const meetings = await Meeting.find(query)
-      .sort({ scheduled_for: -1 })
-      .populate("created_by", "name email")
-      .populate("participants", "name email staffId")
-      .populate("branch_id", "name")
-      .lean();
-    return res.json({ success: true, data: meetings, count: meetings.length });
-  } catch (err) {
-    console.error("[getMeetings]", err);
-    return res.status(500).json({ success: false, message: "Server error." });
-  }
-};
-
-exports.assignUniform = async (req, res) => {
-  try {
-    const { staff_id, item_type, size, item_description } = req.body;
-    const scope = getBranchScope(req);
-    if (!scope) return res.status(400).json({ success: false, message: "Supervisor not assigned to a branch." });
-    const staff = await User.findOne({ _id: staff_id, ...(scope || {}), role: "staff" }).select("_id name");
-    if (!staff) return res.status(404).json({ success: false, message: "Staff not found in scope." });
-
-    const active = await Uniform.findOne({ staff_id, item_type, status: "active" });
-    if (active) {
-      return res.status(400).json({ success: false, message: `Active ${item_type} already assigned to this staff.` });
+    if (period === "today") {
+      from = new Date(base.getFullYear(), base.getMonth(), base.getDate());
+      to = new Date(from);
+    } else if (period === "week") {
+      const day = base.getDay(); // 0..6 (Sun..Sat)
+      const diffToMon = (day + 6) % 7;
+      from = new Date(base);
+      from.setDate(base.getDate() - diffToMon);
+      to = new Date(from);
+      to.setDate(from.getDate() + 6);
+    } else if (period === "month") {
+      from = new Date(base.getFullYear(), base.getMonth(), 1);
+      to = new Date(base.getFullYear(), base.getMonth() + 1, 0);
+    } else {
+      return res.status(400).json({ success: false, message: "period must be today|week|month." });
     }
 
-    const uniform = await Uniform.create({
-      staff_id,
-      item_type,
-      size,
-      item_description,
-      issued_date: new Date(),
-      notes: `Issued by ${req.user.role}`,
+    const fromStr = formatYMD(from);
+    const toStr = formatYMD(to);
+
+    const staff = await User.find({ ...scope, role: "staff", is_active: true }).select("_id name phone staffId").lean();
+    const staffIds = staff.map((s) => s._id);
+    const staffMap = Object.fromEntries(staff.map((s) => [String(s._id), s]));
+
+    const records = staffIds.length
+      ? await Attendance.find({ staff_id: { $in: staffIds }, date: { $gte: fromStr, $lte: toStr } }).lean()
+      : [];
+
+    return res.json({
+      success: true,
+      data: records.map((r) => {
+        const u = staffMap[String(r.staff_id)];
+        return {
+          ...r,
+          staff: u
+            ? { id: u._id, name: u.name, phone: u.phone || null, staffId: u.staffId || null, contact: getContactLinks(u.phone) }
+            : null,
+        };
+      }),
+      range: { from: fromStr, to: toStr },
+      count: records.length,
     });
-
-    await Notification.create({
-      user_id: staff_id,
-      type: "uniform",
-      message: `New uniform assigned: ${item_type}${size ? ` (${size})` : ""}.`,
-    });
-
-    await writeAudit(
-      "ASSIGN_UNIFORM",
-      req,
-      uniform._id,
-      "uniform",
-      null,
-      { staff_id, item_type, size }
-    );
-
-    return res.status(201).json({ success: true, message: "Uniform assigned.", data: uniform });
   } catch (err) {
-    console.error("[assignUniform]", err);
+    console.error("[getAttendance.supervisor]", err);
     return res.status(500).json({ success: false, message: "Server error." });
   }
 };
 
-exports.getUniformHistory = async (req, res) => {
+exports.getLateStaff = async (req, res) => {
   try {
     const scope = getBranchScope(req);
     if (!scope) return res.status(400).json({ success: false, message: "Supervisor not assigned to a branch." });
-    const users = await User.find({ ...(scope || {}), role: "staff" }).select("_id");
-    const ids = users.map((u) => u._id);
-    const rows = await Uniform.find({ staff_id: { $in: ids } })
-      .sort({ issued_date: -1 })
-      .populate("staff_id", "name staffId phone")
-      .lean();
-    return res.json({ success: true, data: rows, count: rows.length });
+
+    const today = getTodayString();
+    const staff = await User.find({ ...scope, role: "staff", is_active: true }).select("_id name phone staffId").lean();
+    const staffIds = staff.map((s) => s._id);
+    const staffMap = Object.fromEntries(staff.map((s) => [String(s._id), s]));
+
+    const late = staffIds.length
+      ? await Attendance.find({ staff_id: { $in: staffIds }, date: today, status: "late" }).lean()
+      : [];
+
+    const data = late.map((r) => {
+      const u = staffMap[String(r.staff_id)];
+      return {
+        staff_id: r.staff_id,
+        name: u?.name || "Unknown",
+        phone: u?.phone || null,
+        minutes_late: r.late_minutes || 0,
+        contact: getContactLinks(u?.phone),
+      };
+    });
+    return res.json({ success: true, data, count: data.length });
   } catch (err) {
-    console.error("[getUniformHistory]", err);
+    console.error("[getLateStaff]", err);
     return res.status(500).json({ success: false, message: "Server error." });
   }
 };

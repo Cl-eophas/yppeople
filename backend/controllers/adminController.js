@@ -15,6 +15,7 @@ const Contract = require("../models/Contract");
 const Shift = require("../models/Shift");
 const OffDay = require("../models/OffDay");
 const ForceClockRequest = require("../models/ForceClockRequest");
+const ForceClockOutRequest = require("../models/ForceClockOutRequest");
 const { sendMail } = require("../utils/mailer");
 const { emitUserStatusChanged } = require("../realtime");
 const { validatePassword } = require("../utils/passwordPolicy");
@@ -502,6 +503,106 @@ exports.rejectForcedClockRequest = async (req, res) => {
     return res.json({ success: true, message: "Forced clock-in request rejected.", data: request });
   } catch (err) {
     console.error("[rejectForcedClockRequest]", err);
+    return res.status(500).json({ success: false, message: "Server error." });
+  }
+};
+
+exports.getForcedClockOutRequests = async (req, res) => {
+  try {
+    const { status = "pending" } = req.query;
+    const query = {};
+    if (["pending", "approved", "rejected"].includes(String(status))) query.status = status;
+
+    const rows = await ForceClockOutRequest.find(query)
+      .sort({ createdAt: -1 })
+      .populate("user_id", "name email phone staffId branch_id")
+      .populate("reviewed_by", "name email")
+      .lean();
+    return res.json({ success: true, data: rows, count: rows.length });
+  } catch (err) {
+    console.error("[getForcedClockOutRequests]", err);
+    return res.status(500).json({ success: false, message: "Server error." });
+  }
+};
+
+exports.approveForcedClockOutRequest = async (req, res) => {
+  try {
+    const request = await ForceClockOutRequest.findById(req.params.id).populate("user_id", "name branch_id");
+    if (!request) return res.status(404).json({ success: false, message: "Request not found." });
+    if (request.status !== "pending") return res.status(400).json({ success: false, message: "Request has already been reviewed." });
+
+    const record = await Attendance.findOne({ staff_id: request.user_id._id, date: request.date });
+    if (!record?.clock_in) return res.status(400).json({ success: false, message: "No clock-in record for that date." });
+    if (record.clock_out) return res.status(400).json({ success: false, message: "Already clocked out." });
+
+    const now = new Date();
+    record.clock_out = now;
+    record.is_forced = true;
+    record.status = "forced";
+    record.notes = `${record.notes || ""} [Forced clock-out approved by admin: ${request.reason}]`.trim();
+    await record.save();
+
+    request.status = "approved";
+    request.reviewed_by = req.user._id;
+    request.reviewed_at = now;
+    request.review_note = String(req.body.note || "").trim() || "Approved by admin";
+    await request.save();
+
+    await Notification.create({
+      user_id: request.user_id._id,
+      type: "attendance",
+      message: "Your forced clock-out request has been approved by admin.",
+    });
+
+    await writeAudit(
+      "APPROVE_FORCED_CLOCKOUT",
+      req,
+      request._id,
+      "attendance",
+      { status: "pending" },
+      { status: "approved", attendance_id: record._id }
+    );
+    if (request.user_id?.branch_id) emitAttendanceChanged({ branch_id: request.user_id.branch_id, date: request.date });
+
+    return res.json({ success: true, message: "Forced clock-out request approved.", data: request });
+  } catch (err) {
+    console.error("[approveForcedClockOutRequest]", err);
+    return res.status(500).json({ success: false, message: "Server error." });
+  }
+};
+
+exports.rejectForcedClockOutRequest = async (req, res) => {
+  try {
+    const request = await ForceClockOutRequest.findById(req.params.id);
+    if (!request) return res.status(404).json({ success: false, message: "Request not found." });
+    if (request.status !== "pending") return res.status(400).json({ success: false, message: "Request has already been reviewed." });
+
+    const note = String(req.body.note || "").trim();
+    if (!note) return res.status(400).json({ success: false, message: "Rejection note is required." });
+
+    request.status = "rejected";
+    request.reviewed_by = req.user._id;
+    request.reviewed_at = new Date();
+    request.review_note = note;
+    await request.save();
+
+    await Notification.create({
+      user_id: request.user_id,
+      type: "warning",
+      message: `Your forced clock-out request was rejected. Reason: ${note}`,
+    });
+
+    await writeAudit(
+      "REJECT_FORCED_CLOCKOUT",
+      req,
+      request._id,
+      "attendance",
+      { status: "pending" },
+      { status: "rejected", review_note: note }
+    );
+    return res.json({ success: true, message: "Forced clock-out request rejected.", data: request });
+  } catch (err) {
+    console.error("[rejectForcedClockOutRequest]", err);
     return res.status(500).json({ success: false, message: "Server error." });
   }
 };
