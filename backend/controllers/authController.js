@@ -82,6 +82,20 @@ exports.login = async (req, res) => {
         status: effectiveStatus,
       });
     }
+    if (!user.role) {
+      return res.status(403).json({
+        success: false,
+        message: "Account approved but role assignment is missing. Contact admin.",
+        code: "ROLE_NOT_ASSIGNED",
+      });
+    }
+    if (user.role !== "admin" && !user.isVerified) {
+      return res.status(403).json({
+        success: false,
+        message: "Account approved but awaiting profile verification.",
+        code: "NOT_VERIFIED",
+      });
+    }
 
     // Reset failed attempts on success
     await user.resetLoginAttempts();
@@ -169,8 +183,8 @@ exports.signup = async (req, res) => {
       name: String(fullName).trim(),
       email: email.toLowerCase().trim(),
       password,
-      // Ignore any client-provided role to prevent privilege escalation.
-      role: "staff",
+      // Keep role unassigned until admin approval.
+      role: null,
       status: "pending",
       is_active: false,
       isVerified: false,
@@ -218,7 +232,7 @@ exports.completeProfile = async (req, res) => {
     if (!user.staffId) user.staffId = await nextYPStaffIdV2();
     user.status = "pending";
     user.is_active = false;
-    user.role = "staff";
+    user.role = null;
     user.profileCompleted = true;
     user.isVerified = false;
 
@@ -430,6 +444,20 @@ exports.googleOAuthSuccess = async (req, res) => {
         message: effectiveStatus === "pending" ? "Account pending approval." : "Account not approved.",
         code: "NOT_APPROVED",
         status: effectiveStatus,
+      });
+    }
+    if (!user.role) {
+      return res.status(403).json({
+        success: false,
+        message: "Account approved but role assignment is missing. Contact admin.",
+        code: "ROLE_NOT_ASSIGNED",
+      });
+    }
+    if (user.role !== "admin" && !user.isVerified) {
+      return res.status(403).json({
+        success: false,
+        message: "Account approved but awaiting profile verification.",
+        code: "NOT_VERIFIED",
       });
     }
 

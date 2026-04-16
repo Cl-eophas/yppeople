@@ -2949,54 +2949,119 @@ async function loadSessions(){
 }
 async function revokeSession(uid){if(!confirm('Revoke all sessions?'))return;await api('DELETE',`/admin/sessions/${uid}`);loadSessions();}
 
+let ADMIN_USER_TAB='pending';
 function adminUsersView(){return `<div id="view-a-users" class="view">
-  <div class="page-head"><div><div class="page-title">User Management</div></div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;">
-      <input class="form-input" id="us-q" placeholder="Name, email, YP Staff ID…" style="width:200px;" oninput="loadUsers()"/>
-      <select class="form-select" id="us-role" style="width:120px;" onchange="loadUsers()"><option value="">All roles</option><option>admin</option><option>general_supervisor</option><option>supervisor</option><option>staff</option></select>
-      <select class="form-select" id="us-active" style="width:110px;" onchange="loadUsers()"><option value="">All</option><option value="true">Active</option><option value="false">Inactive</option></select>
+  <div class="page-head"><div><div class="page-title">Admin Approval Queue</div><div class="page-sub">Strict onboarding gatekeeper: pending, approved, and rejected accounts</div></div></div>
+  <div class="page-body">
+    <div class="card" style="margin-bottom:14px;display:flex;gap:8px;flex-wrap:wrap;">
+      <button id="tab-users-pending" class="btn btn-primary btn-sm" onclick="setAdminUserTab('pending')">Pending</button>
+      <button id="tab-users-approved" class="btn btn-ghost btn-sm" onclick="setAdminUserTab('approved')">Approved</button>
+      <button id="tab-users-rejected" class="btn btn-ghost btn-sm" onclick="setAdminUserTab('rejected')">Rejected</button>
     </div>
+    <div class="card"><div id="users-content"><div class="spinner"></div></div></div>
   </div>
-  <div class="page-body"><div class="card"><div id="users-content"><div class="spinner"></div></div></div></div>
 </div>`;}
 
+function setAdminUserTab(tab){
+  ADMIN_USER_TAB=tab;
+  ['pending','approved','rejected'].forEach(t=>{
+    const el=$(`tab-users-${t}`);
+    if(!el) return;
+    el.className = t===tab ? 'btn btn-primary btn-sm' : 'btn btn-ghost btn-sm';
+  });
+  loadUsers();
+}
+
 async function loadUsers(){
-  const q=$('us-q')?.value,role=$('us-role')?.value,active=$('us-active')?.value;
-  let path='/admin/users?include_profile=true&';
-  if(q)path+=`search=${encodeURIComponent(q)}&`;if(role)path+=`role=${role}&`;if(active!=='')path+=`is_active=${active}&`;
   try{
-    const res=await api('GET',path);
-    $('users-content').innerHTML=res.data.length===0?'<p class="empty">No users found.</p>'
-      :`<table class="tbl"><thead><tr><th>YP Staff ID</th><th>Name</th><th>Email</th><th>Role</th><th>Employment</th><th>Branch</th><th>Status</th><th>Last Login</th><th>Actions</th></tr></thead>
-        <tbody>${res.data.map(u=>{
-          const emp=u.staff_profile?.type?`<span class="tag">${u.staff_profile.type}</span>`:'—';
-          const yp=u.staff_profile?.staff_id;
-          const uid=u._id;
-          const jn=JSON.stringify(u.name);
-          const promStaff=u.is_active&&u.role==='staff'?`<button type="button" class="btn btn-role btn-sm" onclick='openPromoteSupervisor("${uid}", ${jn})'>Promote to Supervisor</button>`:'';
-          const demSup=u.is_active&&u.role==='supervisor'?`<button type="button" class="btn btn-warning btn-sm" onclick='runDemoteSupervisor("${uid}", ${jn})'>Demote to Staff</button>`:'';
-          let empUp='';
-          if(u.staff_profile&&u.is_active&&['staff','supervisor'].includes(u.role)){
-            if(u.staff_profile.type==='casual') empUp=`<button type="button" class="btn btn-success btn-sm" onclick='runPromoteEmployment("${uid}","reliever", ${jn})'>Employment → Reliever</button>`;
-            else if(u.staff_profile.type==='reliever') empUp=`<button type="button" class="btn btn-success btn-sm" onclick='runPromoteEmployment("${uid}","contract", ${jn})'>Employment → Contract</button>`;
-          }
-          return `<tr>
-          <td style="font-family:monospace;font-size:11px;font-weight:600;">${escHtml(yp||'—')}</td>
-          <td style="font-weight:700;">${u.name}</td>
-          <td style="font-size:12px;color:var(--muted);">${u.email}</td>
-          <td><span class="badge b-${u.role}">${u.role}</span></td>
-          <td>${emp}</td>
-          <td style="font-size:12px;">${u.branch_id?.name||'—'}</td>
-          <td><span class="badge ${u.is_active?'b-active':'b-inactive'}">${u.is_active?'Active':'Inactive'}</span></td>
-          <td style="font-size:12px;color:var(--muted);">${u.last_login?fdt(u.last_login):'Never'}</td>
-          <td style="display:flex;gap:5px;flex-wrap:wrap;max-width:320px;">
-            ${promStaff}${demSup}${empUp}
-            ${u.is_active?`<button class="btn btn-warning btn-sm" onclick='doDeactivate("${uid}", ${jn})'>Deactivate</button>`:''}
-            <button class="btn btn-danger btn-sm" onclick="openDelete('${uid}')">Delete</button>
-          </td>
-        </tr>`;
-        }).join('')}</tbody></table>`;
+    if(ADMIN_USER_TAB==='approved'){
+      const res=await api('GET','/admin/users/approved');
+      $('users-content').innerHTML=res.data.length===0?'<p class="empty">No approved users.</p>'
+      :`<table class="tbl"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Verification</th><th>Status</th><th>Approved At</th></tr></thead>
+      <tbody>${res.data.map(u=>`<tr>
+        <td style="font-weight:700;">${escHtml(u.name||'—')}</td>
+        <td style="font-size:12px;color:var(--muted);">${escHtml(u.email||'—')}</td>
+        <td><span class="badge b-${u.role||'staff'}">${escHtml(u.role||'—')}</span></td>
+        <td>${u.isVerified?'<span class="badge b-approved">✔ Verified</span>':'<span class="badge b-pending">Waiting verification</span>'}</td>
+        <td><span class="badge b-approved">✔ Approved</span></td>
+        <td style="font-size:12px;">${u.approved_at?fdt(u.approved_at):'—'}</td>
+      </tr>`).join('')}</tbody></table>`;
+      return;
+    }
+    if(ADMIN_USER_TAB==='rejected'){
+      const res=await api('GET','/admin/users/rejected');
+      $('users-content').innerHTML=res.data.length===0?'<p class="empty">No rejected users.</p>'
+      :`<table class="tbl"><thead><tr><th>Name</th><th>Email</th><th>Reason</th><th>Status</th><th>Rejected At</th></tr></thead>
+      <tbody>${res.data.map(u=>`<tr>
+        <td style="font-weight:700;">${escHtml(u.name||'—')}</td>
+        <td style="font-size:12px;color:var(--muted);">${escHtml(u.email||'—')}</td>
+        <td style="font-size:12px;">${escHtml(u.rejection_reason||'—')}</td>
+        <td><span class="badge b-rejected">❌ Rejected</span></td>
+        <td style="font-size:12px;">${u.rejected_at?fdt(u.rejected_at):'—'}</td>
+      </tr>`).join('')}</tbody></table>`;
+      return;
+    }
+
+    const res=await api('GET','/admin/users/pending');
+    $('users-content').innerHTML=res.data.length===0?'<p class="empty">No pending users.</p>'
+      :`<table class="tbl"><thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>ID</th><th>Profile Submission</th><th>Role</th><th>Actions</th></tr></thead>
+      <tbody>${res.data.map(u=>`<tr id="pending-user-${u._id}">
+        <td style="font-weight:700;">${escHtml(u.name||'—')}</td>
+        <td style="font-size:12px;color:var(--muted);">${escHtml(u.email||'—')}</td>
+        <td style="font-size:12px;">${escHtml(u.phone||'—')}</td>
+        <td style="font-size:12px;">${escHtml(u.idNumber||'—')}</td>
+        <td style="font-size:11px;line-height:1.45;">
+          KRA: ${escHtml(u.kraPin||'—')}<br/>
+          NSSF: ${escHtml(u.nssf||'—')} · NHIF: ${escHtml(u.nhif||'—')}<br/>
+          Bank: ${escHtml(u.bank?.bankName||'—')} (${escHtml(u.bank?.branch||'—')})<br/>
+          Account: ${escHtml(u.bank?.accountNumber||'—')}
+        </td>
+        <td>
+          <select class="form-select" id="pending-role-${u._id}" style="min-width:170px;">
+            <option value="">Select role</option>
+            <option value="staff">staff</option>
+            <option value="supervisor">supervisor</option>
+            <option value="general_supervisor">general_supervisor</option>
+          </select>
+        </td>
+        <td style="display:flex;gap:6px;flex-wrap:wrap;">
+          <button id="approve-btn-${u._id}" class="btn btn-success btn-sm" onclick="approvePendingUser('${u._id}')">Approve</button>
+          <button id="reject-btn-${u._id}" class="btn btn-danger btn-sm" onclick="rejectPendingUser('${u._id}')">Reject</button>
+        </td>
+      </tr>`).join('')}</tbody></table>`;
   }catch(e){$('users-content').innerHTML=`<p style="color:var(--danger);">${e.message}</p>`;}
+}
+
+async function approvePendingUser(id){
+  const role=$(`pending-role-${id}`)?.value||'';
+  if(!role){alert('Select a role before approval.');return;}
+  const btnA=$(`approve-btn-${id}`), btnR=$(`reject-btn-${id}`);
+  if(btnA) btnA.disabled=true;
+  if(btnR) btnR.disabled=true;
+  try{
+    await api('PUT',`/admin/users/${id}/approve`,{role});
+    loadUsers();
+  }catch(e){
+    if(btnA) btnA.disabled=false;
+    if(btnR) btnR.disabled=false;
+    alert(e.message);
+  }
+}
+
+async function rejectPendingUser(id){
+  const reason=prompt('Rejection reason:');
+  if(!reason||!reason.trim()) return;
+  const btnA=$(`approve-btn-${id}`), btnR=$(`reject-btn-${id}`);
+  if(btnA) btnA.disabled=true;
+  if(btnR) btnR.disabled=true;
+  try{
+    await api('PUT',`/admin/users/${id}/reject`,{reason:reason.trim()});
+    loadUsers();
+  }catch(e){
+    if(btnA) btnA.disabled=false;
+    if(btnR) btnR.disabled=false;
+    alert(e.message);
+  }
 }
 
 function openPromoteSupervisor(id,name){
@@ -3593,7 +3658,7 @@ window.showView = function(name, el) {
   if(name==='a-sec')     loadSec();
   if(name==='a-audit')   loadAudit();
   if(name==='a-sessions')loadSessions();
-  if(name==='a-users')   loadUsers();
+  if(name==='a-users')   setAdminUserTab(ADMIN_USER_TAB||'pending');
   if(name==='a-shifts')  loadAdminShifts();
   if(name==='a-branches'){loadBranchesForAdmin();setTimeout(()=>initBranchMapIfNeeded(),120);}
   if(name==='a-att')     {

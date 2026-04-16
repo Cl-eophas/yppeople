@@ -22,16 +22,24 @@ router.patch(
 
 router.get("/users", guard, admin.getAllUsers);
 router.get("/users/pending", guard, admin.getPendingUsers);
+router.get("/users/approved", guard, admin.getApprovedUsers);
+router.get("/users/rejected", guard, admin.getRejectedUsers);
 router.get("/users/:id", guard, [param("id").isMongoId()], validate, admin.getUserById);
 router.patch("/users/:id", guard, [param("id").isMongoId()], validate, admin.updateUser);
 router.put(
   "/users/:id/approve",
   guard,
-  [param("id").isMongoId(), body("role").isIn(["admin", "general_supervisor", "supervisor", "staff"])],
+  [param("id").isMongoId(), body("role").isIn(["general_supervisor", "supervisor", "staff"])],
   validate,
   admin.approveUser
 );
-router.put("/users/:id/reject", guard, [param("id").isMongoId()], validate, admin.rejectUser);
+router.put(
+  "/users/:id/reject",
+  guard,
+  [param("id").isMongoId(), body("reason").trim().isLength({ min: 2, max: 300 })],
+  validate,
+  admin.rejectUser
+);
 router.put("/users/:id/verify", guard, [param("id").isMongoId()], validate, admin.verifyUserProfile);
 router.post(
   "/create-user",

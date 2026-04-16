@@ -27,10 +27,19 @@ const userSchema = new mongoose.Schema(
     // System / onboarding
     role: {
       type: String,
-      enum: ["admin", "general_supervisor", "supervisor", "staff"],
-      default: "staff",
+      default: null,
+      validate: {
+        validator(v) {
+          return v === null || ["admin", "general_supervisor", "supervisor", "staff"].includes(v);
+        },
+        message: "Invalid role value.",
+      },
     },
     status: { type: String, enum: ["pending", "approved", "rejected"], default: "pending" },
+    approved_at: { type: Date, default: null },
+    approved_by: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    rejected_at: { type: Date, default: null },
+    rejection_reason: { type: String, trim: true, default: null },
     isVerified: { type: Boolean, default: false },
     profileCompleted: { type: Boolean, default: false },
     branch_id: { type: mongoose.Schema.Types.ObjectId, ref: "Branch" },

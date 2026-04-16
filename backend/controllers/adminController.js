@@ -192,6 +192,9 @@ exports.getAllUsers = async (req, res) => {
 exports.getPendingUsers = async (req, res) => {
   try {
     const users = await User.find({ status: "pending" })
+      .select(
+        "name email phone idNumber kraPin nssf nhif bank status is_active role profileCompleted isVerified createdAt approved_at approved_by rejected_at rejection_reason"
+      )
       .populate("branch_id", "name")
       .sort({ createdAt: -1 })
       .lean();
@@ -201,25 +204,67 @@ exports.getPendingUsers = async (req, res) => {
   }
 };
 
+exports.getApprovedUsers = async (req, res) => {
+  try {
+    const users = await User.find({ status: "approved", is_active: true })
+      .select(
+        "name email phone idNumber role status is_active isVerified profileCompleted approved_at approved_by createdAt"
+      )
+      .populate("approved_by", "name email")
+      .populate("branch_id", "name")
+      .sort({ approved_at: -1, createdAt: -1 })
+      .lean();
+    return res.json({ success: true, data: users, count: users.length });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: "Server error." });
+  }
+};
+
+exports.getRejectedUsers = async (req, res) => {
+  try {
+    const users = await User.find({ status: "rejected" })
+      .select("name email phone idNumber status is_active rejected_at rejection_reason createdAt")
+      .sort({ rejected_at: -1, createdAt: -1 })
+      .lean();
+    return res.json({ success: true, data: users, count: users.length });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: "Server error." });
+  }
+};
+
 exports.approveUser = async (req, res) => {
   try {
     const { role } = req.body;
-    if (!["staff", "supervisor", "general_supervisor", "admin"].includes(role)) {
+    if (!["staff", "supervisor", "general_supervisor"].includes(role)) {
       return res.status(400).json({ success: false, message: "Invalid role." });
     }
     const user = await User.findById(req.params.id);
     if (!user) return res.status(404).json({ success: false, message: "User not found." });
+    if (user.status !== "pending") {
+      return res.status(400).json({ success: false, message: "Only pending users can be approved." });
+    }
 
-    const before = { status: user.status, is_active: user.is_active, role: user.role };
+    const before = {
+      status: user.status,
+      is_active: user.is_active,
+      role: user.role,
+      approved_at: user.approved_at,
+      approved_by: user.approved_by,
+    };
+    const now = new Date();
     user.role = role;
     user.status = "approved";
     user.is_active = true;
+    user.approved_at = now;
+    user.approved_by = req.user._id;
+    user.rejected_at = null;
+    user.rejection_reason = null;
     await user.save();
 
     await Notification.create({
       user_id: user._id,
-      type: "info",
-      message: `Your account has been approved. You can now log in.`,
+      type: "approval",
+      message: "Your account has been approved.",
     });
 
     const loginUrl = process.env.PUBLIC_APP_URL || "http://localhost:5000/";
@@ -230,7 +275,15 @@ exports.approveUser = async (req, res) => {
       text: `Hello ${user.name},\n\nYour account has been approved. Log in: ${loginUrl}\n`,
     });
 
-    await writeAudit("APPROVE_USER", req, user._id, "users", before, { status: "approved", role }, { notify: true });
+    await writeAudit(
+      "APPROVE_USER",
+      req,
+      user._id,
+      "users",
+      before,
+      { status: "approved", is_active: true, role, approved_at: now, approved_by: req.user._id },
+      { notify: true }
+    );
     emitUserStatusChanged({ user_id: user._id, status: "approved", role: user.role });
 
     res.json({ success: true, message: "User approved.", data: { id: user._id, status: user.status, role: user.role } });
@@ -242,29 +295,54 @@ exports.approveUser = async (req, res) => {
 
 exports.rejectUser = async (req, res) => {
   try {
+    const reason = String(req.body.reason || "").trim();
+    if (!reason) {
+      return res.status(400).json({ success: false, message: "Rejection reason is required." });
+    }
     const user = await User.findById(req.params.id);
     if (!user) return res.status(404).json({ success: false, message: "User not found." });
+    if (user.status !== "pending") {
+      return res.status(400).json({ success: false, message: "Only pending users can be rejected." });
+    }
 
-    const before = { status: user.status, is_active: user.is_active };
+    const before = {
+      status: user.status,
+      is_active: user.is_active,
+      rejected_at: user.rejected_at,
+      rejection_reason: user.rejection_reason,
+    };
+    const now = new Date();
+    user.role = null;
     user.status = "rejected";
     user.is_active = false;
+    user.rejected_at = now;
+    user.rejection_reason = reason;
     await user.save();
+    await revokeAllSessions(user._id);
 
     await Notification.create({
       user_id: user._id,
-      type: "warning",
-      message: `Your account registration was rejected. Contact HR/admin for support.`,
+      type: "rejection",
+      message: `Your account was rejected: ${reason}`,
     });
 
     const loginUrl = process.env.PUBLIC_APP_URL || "http://localhost:5000/";
     await sendMail({
       to: user.email,
       subject: "Account rejected",
-      html: `<p>Hello ${user.name},</p><p>Your account registration was rejected. If you believe this is an error, contact HR/admin.</p>`,
-      text: `Hello ${user.name},\n\nYour account registration was rejected. Contact HR/admin.\n`,
+      html: `<p>Hello ${user.name},</p><p>Your account registration was rejected.</p><p>Reason: ${reason}</p>`,
+      text: `Hello ${user.name},\n\nYour account registration was rejected.\nReason: ${reason}\n`,
     });
 
-    await writeAudit("REJECT_USER", req, user._id, "users", before, { status: "rejected" }, { notify: true });
+    await writeAudit(
+      "REJECT_USER",
+      req,
+      user._id,
+      "users",
+      before,
+      { status: "rejected", is_active: false, rejected_at: now, rejection_reason: reason },
+      { notify: true }
+    );
     emitUserStatusChanged({ user_id: user._id, status: "rejected" });
 
     res.json({ success: true, message: "User rejected." });

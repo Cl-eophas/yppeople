@@ -29,7 +29,7 @@ const configurePassport = () => {
               name: profile.displayName || "Google User",
               email: primaryEmail,
               googleId: profile.id,
-              role: "staff",
+              role: null,
               status: "pending",
               is_active: false,
               isVerified: false,
