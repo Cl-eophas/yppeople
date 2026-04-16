@@ -1,11 +1,11 @@
 const express = require("express");
 const { body } = require("express-validator");
 const router = express.Router();
-const { authenticate, staffOrSupervisor } = require("../middleware/auth");
+const { authenticate, staffSupervisorOrGeneral } = require("../middleware/auth");
 const { validate } = require("../middleware/validate");
 const profile = require("../controllers/profileController");
 
-router.get("/", authenticate, staffOrSupervisor, profile.getProfile);
+router.get("/", authenticate, staffSupervisorOrGeneral, profile.getProfile);
 
 const profileValidators = [
   body("fullName").trim().isLength({ min: 2, max: 120 }),
@@ -23,7 +23,7 @@ const profileValidators = [
 router.put(
   "/profile",
   authenticate,
-  staffOrSupervisor,
+  staffSupervisorOrGeneral,
   profileValidators,
   validate,
   profile.updateProfile
@@ -32,10 +32,13 @@ router.put(
 router.patch(
   "/update",
   authenticate,
-  staffOrSupervisor,
-  profileValidators,
+  staffSupervisorOrGeneral,
+  [
+    body("phone").trim().matches(/^(\+254|0)[0-9]{9}$/),
+    body("address").optional().isString().trim().isLength({ max: 240 }),
+  ],
   validate,
-  profile.updateProfile
+  profile.updateContact
 );
 
 module.exports = router;

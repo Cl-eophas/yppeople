@@ -343,8 +343,8 @@ exports.approveLeave = async (req, res) => {
     if (leave.type.startsWith("sick") && !leave.medical_document) {
       return res.status(400).json({ success: false, message: "Cannot approve sick leave without medical document." });
     }
-    if (leave.status === "approved") {
-      return res.status(400).json({ success: false, message: "Leave already approved." });
+    if (!["pending", "pending_document"].includes(leave.status)) {
+      return res.status(400).json({ success: false, message: "Leave can only be approved from pending state." });
     }
 
     leave.status = "approved";
@@ -383,6 +383,9 @@ exports.rejectLeave = async (req, res) => {
     const leave = await Leave.findById(id).populate("staff_id", "branch_id name _id");
     if (!leave) {
       return res.status(404).json({ success: false, message: "Leave request not found." });
+    }
+    if (!["pending", "pending_document"].includes(leave.status)) {
+      return res.status(400).json({ success: false, message: "Leave can only be rejected from pending state." });
     }
     if (scope?.branch_id && leave.staff_id.branch_id?.toString() !== String(scope.branch_id)) {
       return res.status(403).json({ success: false, message: "Staff not in your branch." });

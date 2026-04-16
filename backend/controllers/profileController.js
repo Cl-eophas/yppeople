@@ -85,3 +85,27 @@ exports.updateProfile = async (req, res) => {
     res.status(500).json({ success: false, message: "Server error." });
   }
 };
+
+exports.updateContact = async (req, res) => {
+  try {
+    const { phone, address } = req.body;
+    const phoneOk = /^(\+254|0)[0-9]{9}$/.test(String(phone || ""));
+    if (!phoneOk) {
+      return res.status(400).json({ success: false, message: "Invalid phone number format." });
+    }
+
+    const profile = await StaffProfile.findOneAndUpdate(
+      { user_id: req.user._id },
+      { $set: { phone: String(phone).trim(), address: String(address || "").trim() } },
+      { new: true, upsert: true }
+    );
+
+    return res.json({
+      success: true,
+      message: "Contact profile updated successfully.",
+      data: { phone: profile.phone, address: profile.address },
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: "Server error." });
+  }
+};

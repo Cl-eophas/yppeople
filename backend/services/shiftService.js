@@ -167,7 +167,7 @@ async function updateShift(shiftId, updates, actor) {
     const rules = await validateEmploymentShiftRules(staffId, nextDate);
     if (!rules.ok) return rules;
     if (updates.shift_date !== undefined && updates.shift_date !== shift.shift_date) {
-      const dup = await Shift.findOne({ staff_id, shift_date: nextDate, _id: { $ne: shift._id } });
+      const dup = await Shift.findOne({ staff_id: staffId, shift_date: nextDate, _id: { $ne: shift._id } });
       if (dup) return { ok: false, code: 409, message: "Duplicate shift for that date." };
     }
     if (

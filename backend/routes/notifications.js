@@ -1,16 +1,16 @@
 const express = require("express");
 const router = express.Router();
-const { authenticate, staffOrSupervisor } = require("../middleware/auth");
+const { authenticate, staffSupervisorOrGeneral } = require("../middleware/auth");
 const { validate } = require("../middleware/validate");
 const { body } = require("express-validator");
 const notif = require("../controllers/notificationController");
 
-router.get("/", authenticate, staffOrSupervisor, notif.getNotifications);
+router.get("/", authenticate, staffSupervisorOrGeneral, notif.getNotifications);
 
 router.patch(
   "/read",
   authenticate,
-  staffOrSupervisor,
+  staffSupervisorOrGeneral,
   [body("notification_ids").optional().isArray()],
   validate,
   notif.markAsRead

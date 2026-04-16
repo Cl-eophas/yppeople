@@ -108,4 +108,21 @@ const staffOrSupervisor = (req, res, next) => {
   next();
 };
 
-module.exports = { authenticate, authenticateAnyStatus, requireRole, staffOnly, staffOrSupervisor };
+const staffSupervisorOrGeneral = (req, res, next) => {
+  if (!req.user) return res.status(401).json({ success: false, message: "Unauthorized." });
+  if (!["staff", "supervisor", "general_supervisor"].includes(req.user.role)) {
+    return res
+      .status(403)
+      .json({ success: false, message: "Staff, supervisor, or general supervisor access only." });
+  }
+  next();
+};
+
+module.exports = {
+  authenticate,
+  authenticateAnyStatus,
+  requireRole,
+  staffOnly,
+  staffOrSupervisor,
+  staffSupervisorOrGeneral,
+};

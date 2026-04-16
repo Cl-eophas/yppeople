@@ -244,13 +244,11 @@ exports.refresh = async (req, res) => {
   try {
     const valid = await verifyRefreshToken(user_id, rawToken);
     if (!valid) {
-      // Possible token theft — revoke everything
-      await revokeAllSessions(user_id);
       clearRefreshCookie(res);
       await recordEvent("token_reuse", {
         user_id,
         ip_address: getIP(req),
-        metadata: { note: "Invalid refresh token — all sessions revoked" },
+        metadata: { note: "Invalid refresh token" },
       });
       return res.status(401).json({ success: false, message: "Session invalid. Please log in again." });
     }

@@ -37,6 +37,7 @@
 body.role-admin    { --role-color:#ff4d6d; --role-bg:rgba(255,77,109,0.12); --role-border:rgba(255,77,109,0.3); }
 body.role-supervisor { --role-color:#7c4dff; --role-bg:rgba(124,77,255,0.12); --role-border:rgba(124,77,255,0.3); }
 body.role-staff    { --role-color:#4f8ef7; --role-bg:rgba(79,142,247,0.12); --role-border:rgba(79,142,247,0.3); }
+body.role-general_supervisor { --role-color:#0ea5a0; --role-bg:rgba(14,165,160,0.12); --role-border:rgba(14,165,160,0.3); }
 
 *{box-sizing:border-box;margin:0;padding:0;}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;font-size:14px;}
@@ -2952,7 +2953,7 @@ function adminUsersView(){return `<div id="view-a-users" class="view">
   <div class="page-head"><div><div class="page-title">User Management</div></div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;">
       <input class="form-input" id="us-q" placeholder="Name, email, YP Staff ID…" style="width:200px;" oninput="loadUsers()"/>
-      <select class="form-select" id="us-role" style="width:120px;" onchange="loadUsers()"><option value="">All roles</option><option>admin</option><option>supervisor</option><option>staff</option></select>
+      <select class="form-select" id="us-role" style="width:120px;" onchange="loadUsers()"><option value="">All roles</option><option>admin</option><option>general_supervisor</option><option>supervisor</option><option>staff</option></select>
       <select class="form-select" id="us-active" style="width:110px;" onchange="loadUsers()"><option value="">All</option><option value="true">Active</option><option value="false">Inactive</option></select>
     </div>
   </div>
@@ -3052,7 +3053,7 @@ function adminCreateUserView(){return `<div id="view-a-create" class="view">
     <div class="form-group"><label class="form-label">Password (min 8, upper+lower+digit)</label><input class="form-input" id="cu-pass" type="password"/></div>
     <div class="g2">
       <div class="form-group"><label class="form-label">Role</label>
-        <select class="form-select" id="cu-role"><option value="staff">Staff</option><option value="supervisor">Supervisor</option><option value="admin">Admin</option></select>
+        <select class="form-select" id="cu-role"><option value="staff">Staff</option><option value="supervisor">Supervisor</option><option value="general_supervisor">General Supervisor</option><option value="admin">Admin</option></select>
       </div>
       <div class="form-group"><label class="form-label">Branch</label><select class="form-select" id="cu-branch"><option value="">No branch</option></select></div>
     </div>
@@ -3617,11 +3618,11 @@ function startRefresh() {
     try {
       const payload = TOKEN ? JSON.parse(atob(TOKEN.split('.')[1])) : null;
       if(!payload) return;
-      const bar=$('session-bar'); bar.classList.add('active');
+      const bar=$('session-bar'); if(bar) bar.classList.add('active');
       const res=await fetch(`${API}/auth/refresh`,{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_id:payload.id})});
       const j=await res.json();
       if(j.access_token){TOKEN=j.access_token;localStorage.setItem('wms_token',TOKEN);}
-      setTimeout(()=>bar.classList.remove('active'),800);
+      if(bar) setTimeout(()=>bar.classList.remove('active'),800);
     }catch(e){}
   }, 13*60*1000);
 }

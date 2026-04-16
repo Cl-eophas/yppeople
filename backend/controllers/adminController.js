@@ -1274,6 +1274,9 @@ exports.approveLeave = async (req, res) => {
   try {
     const leave = await Leave.findById(req.params.id).populate("staff_id", "name branch_id _id");
     if (!leave) return res.status(404).json({ success: false, message: "Leave not found." });
+    if (!["pending", "pending_document"].includes(leave.status)) {
+      return res.status(400).json({ success: false, message: "Leave can only be approved from pending state." });
+    }
     if (leave.type.startsWith("sick") && !leave.medical_document)
       return res.status(400).json({ success: false, message: "Cannot approve sick leave without medical document." });
 
@@ -1303,6 +1306,9 @@ exports.rejectLeave = async (req, res) => {
 
     const leave = await Leave.findById(req.params.id).populate("staff_id", "_id name");
     if (!leave) return res.status(404).json({ success: false, message: "Leave not found." });
+    if (!["pending", "pending_document"].includes(leave.status)) {
+      return res.status(400).json({ success: false, message: "Leave can only be rejected from pending state." });
+    }
 
     // Refund balance
     const balance = await LeaveBalance.findOne({ staff_id: leave.staff_id._id });
