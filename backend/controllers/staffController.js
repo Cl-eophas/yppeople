@@ -3,7 +3,9 @@ const StaffProfile = require("../models/StaffProfile");
 const Attendance = require("../models/Attendance");
 const LeaveBalance = require("../models/LeaveBalance");
 const Notification = require("../models/Notification");
+const Shift = require("../models/Shift");
 const { getTodayString } = require("../utils/dateHelpers");
+const { verificationPayload, resolveVerificationStatus } = require("../utils/profileVerification");
 
 exports.getDashboard = async (req, res) => {
   try {
@@ -33,6 +35,22 @@ exports.getDashboard = async (req, res) => {
       .sort({ createdAt: -1 })
       .limit(5);
 
+    const todayShift = await Shift.findOne({ staff_id: req.user._id, shift_date: today })
+      .select("start_time end_time")
+      .lean();
+
+    const v = resolveVerificationStatus(user);
+    const verification_banner =
+      !user.profileCompleted
+        ? "⚠️ Complete your profile"
+        : v.status === "pending"
+          ? "⏳ Waiting for admin verification"
+          : v.status === "rejected"
+            ? `❌ Verification failed: ${v.reason || "See admin feedback"}`
+            : v.status === "verified"
+              ? "✔ Verified"
+              : "⚠️ Your profile is incomplete. Complete verification to enable payroll.";
+
     return res.json({
       success: true,
       data: {
@@ -42,9 +60,15 @@ exports.getDashboard = async (req, res) => {
           type: profile?.type,
           branch: user.branch_id ? { id: user.branch_id._id, name: user.branch_id.name } : null,
         },
+        verification: {
+          ...verificationPayload(user),
+          banner: verification_banner,
+        },
         today: {
           date: today,
-          shift: { start: "08:00", end: "17:00" },
+          shift: todayShift
+            ? { start: todayShift.start_time, end: todayShift.end_time }
+            : null,
           clocked_in: !!att?.clock_in,
           clocked_out: !!att?.clock_out,
           clock_in_time: att?.clock_in || null,

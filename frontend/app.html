@@ -239,6 +239,15 @@ nav{flex:1;padding:6px 0;}
 .dot-in{background:var(--success);box-shadow:0 0 7px var(--success);}
 .dot-out{background:var(--muted);}
 
+.verify-banner{
+  margin-bottom:14px;padding:12px 16px;border-radius:var(--radius);font-size:13px;line-height:1.45;
+  background:var(--surface2);border:1px solid var(--border);
+}
+.verify-banner[data-status="verified"]{border-left:4px solid #3b82f6;}
+.verify-banner[data-status="pending"]{border-left:4px solid var(--warning);}
+.verify-banner[data-status="rejected"]{border-left:4px solid var(--danger);}
+.verify-banner[data-status="not_submitted"]{border-left:4px solid var(--warning);}
+
 /* ── Landing hero ─────────────────────────────────────────────── */
 #stage-landing{
   min-height:100vh;position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;
@@ -1144,6 +1153,7 @@ function staffDashView() {
       <div><div class="page-title">Dashboard</div><div class="page-sub" id="s-date">—</div></div>
     </div>
     <div class="page-body">
+      <div id="s-verify-banner" class="verify-banner" style="display:none;" role="status"></div>
       <div class="clock-panel">
         <div class="clock-face" id="live-clock">00:00:00</div>
         <div id="gps-chip" class="gps-chip gps-wait">⏳ Locating GPS…</div>
@@ -1189,6 +1199,13 @@ async function loadStaffDash() {
     const res = await api('GET','/staff/dashboard');
     const d = res.data;
     ME.name = d.staff.name;
+
+    const vb = $('s-verify-banner');
+    if (vb && d.verification) {
+      vb.style.display = 'block';
+      vb.setAttribute('data-status', d.verification.verification_status || 'not_submitted');
+      vb.textContent = d.verification.banner || '';
+    }
 
     // Stats
     const s = d.month_summary;
@@ -1561,6 +1578,18 @@ async function loadProfile() {
     const res=await api('GET','/profile'); const d=res.data;
     $('p-phone').value=d.phone||''; $('p-addr').value=d.address||'';
     let banner = '';
+    if (d.role && d.role !== 'admin') {
+      const vs = d.verification_status || (d.profile_verified || d.isVerified ? 'verified' : d.profile_completed ? 'pending' : 'not_submitted');
+      let vtxt =
+        vs === 'not_submitted'
+          ? '⚠️ Complete your profile'
+          : vs === 'pending'
+            ? '⏳ Waiting for admin verification'
+            : vs === 'verified'
+              ? '✔ Verified'
+              : `❌ Verification failed: ${escHtml(d.verification_rejection_reason || '—')}`;
+      banner += `<div class="verify-banner" data-status="${vs}" style="margin-bottom:12px;">${vtxt}</div>`;
+    }
     if (d.role === 'staff' && d.type === 'contract') {
       try {
         const c = await api('GET','/contracts/me');
@@ -2976,15 +3005,31 @@ async function loadUsers(){
   try{
     if(ADMIN_USER_TAB==='approved'){
       const res=await api('GET','/admin/users/approved');
+      const vBadge=(u)=>{
+        const vs=u.verification_status||(u.isVerified?'verified':'pending');
+        if(vs==='verified')return'<span class="badge b-approved">✔ Verified</span>';
+        if(vs==='rejected')return'<span class="badge b-rejected">❌ Rejected</span>';
+        if(vs==='pending')return'<span class="badge b-pending">⏳ Pending</span>';
+        return'<span class="badge b-pending">⚠ Not submitted</span>';
+      };
+      const vActions=(u)=>{
+        const vs=u.verification_status||(u.isVerified?'verified':'pending');
+        const pc=u.profileCompleted===true;
+        if(!pc)return'<span style="font-size:11px;color:var(--muted);">Awaiting profile</span>';
+        if(vs==='verified')return`<button type="button" class="btn btn-danger btn-sm" onclick="rejectApprovedProfile('${u._id}')">Reject profile</button>`;
+        return`<button type="button" class="btn btn-success btn-sm" onclick="verifyApprovedProfile('${u._id}')">Verify</button>
+          <button type="button" class="btn btn-danger btn-sm" onclick="rejectApprovedProfile('${u._id}')">Reject</button>`;
+      };
       $('users-content').innerHTML=res.data.length===0?'<p class="empty">No approved users.</p>'
-      :`<table class="tbl"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Verification</th><th>Status</th><th>Approved At</th></tr></thead>
+      :`<table class="tbl"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Verification</th><th>Status</th><th>Approved At</th><th>Actions</th></tr></thead>
       <tbody>${res.data.map(u=>`<tr>
         <td style="font-weight:700;">${escHtml(u.name||'—')}</td>
         <td style="font-size:12px;color:var(--muted);">${escHtml(u.email||'—')}</td>
         <td><span class="badge b-${u.role||'staff'}">${escHtml(u.role||'—')}</span></td>
-        <td>${u.isVerified?'<span class="badge b-approved">✔ Verified</span>':'<span class="badge b-pending">Waiting verification</span>'}</td>
+        <td>${vBadge(u)}</td>
         <td><span class="badge b-approved">✔ Approved</span></td>
         <td style="font-size:12px;">${u.approved_at?fdt(u.approved_at):'—'}</td>
+        <td style="white-space:nowrap;">${vActions(u)}</td>
       </tr>`).join('')}</tbody></table>`;
       return;
     }

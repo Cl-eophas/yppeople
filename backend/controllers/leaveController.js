@@ -112,17 +112,8 @@ exports.requestLeave = async (req, res) => {
       end_date: end,
       days_requested: days,
       status,
+      balance_reserved_pending: false,
     });
-
-    // Deduct from balance
-    if (type === "annual") {
-      balance.annual_balance -= days;
-    } else if (type === "sick_full") {
-      balance.sick_full_used += days;
-    } else if (type === "sick_half") {
-      balance.sick_half_used += days;
-    }
-    await balance.save();
 
     res.json({
       success: true,

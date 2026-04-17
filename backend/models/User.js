@@ -40,10 +40,18 @@ const userSchema = new mongoose.Schema(
     approved_by: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
     rejected_at: { type: Date, default: null },
     rejection_reason: { type: String, trim: true, default: null },
+    /** Profile/payroll verification after login (not gating login). */
+    verification_status: {
+      type: String,
+      enum: ["not_submitted", "pending", "verified", "rejected"],
+      default: "not_submitted",
+    },
+    verification_rejection_reason: { type: String, trim: true, default: null },
     isVerified: { type: Boolean, default: false },
     profileCompleted: { type: Boolean, default: false },
     branch_id: { type: mongoose.Schema.Types.ObjectId, ref: "Branch" },
     is_active: { type: Boolean, default: false }, // false until approved
+    deleted_at: { type: Date, default: null },
     failed_login_attempts: { type: Number, default: 0 },
     lockout_until: { type: Date, default: null },
     password_changed_at: { type: Date },
@@ -71,6 +79,7 @@ const userSchema = new mongoose.Schema(
 userSchema.index({ branch_id: 1, role: 1 });
 userSchema.index({ is_active: 1, role: 1 });
 userSchema.index({ status: 1, role: 1, is_active: 1 });
+userSchema.index({ deleted_at: 1 });
 
 userSchema.pre("save", async function (next) {
   if (!this.isModified("password")) return next();

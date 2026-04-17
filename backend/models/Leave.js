@@ -16,6 +16,8 @@ const leaveSchema = new mongoose.Schema(
     rejection_reason: String,
     approved_by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     approved_at: Date,
+    /** false = balance is applied on admin approval (new). Omitted/legacy = deducted at request time. */
+    balance_reserved_pending: { type: Boolean, default: false },
   },
   { timestamps: true }
 );

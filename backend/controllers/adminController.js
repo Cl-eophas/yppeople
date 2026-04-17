@@ -23,6 +23,8 @@ const { getActiveAlerts, detectRapidActions } = require("../utils/intrusion");
 const { revokeAllSessions } = require("../utils/tokens");
 const { emitAttendanceChanged } = require("../realtime");
 const { escapeRegExp, matchUserIdsByStaffSearch } = require("../utils/staffSearch");
+const { resolveVerificationStatus } = require("../utils/profileVerification");
+const { calcAnnualLeaveAccrual, isSickLeaveEligible } = require("../utils/dateHelpers");
 
 /** Debounce identical attendance exports per admin (month bucket) to reduce duplicate downloads. */
 const recentAttendanceExports = new Map();
@@ -153,7 +155,7 @@ exports.resolveSecurityEvent = async (req, res) => {
 exports.getAllUsers = async (req, res) => {
   try {
     const { role, branch_id, is_active, status, search } = req.query;
-    const query = {};
+    const query = { deleted_at: null };
     if (role) query.role = role;
     if (branch_id) query.branch_id = branch_id;
     if (is_active !== undefined) query.is_active = is_active === "true";
@@ -191,7 +193,7 @@ exports.getAllUsers = async (req, res) => {
 
 exports.getPendingUsers = async (req, res) => {
   try {
-    const users = await User.find({ status: "pending" })
+    const users = await User.find({ status: "pending", deleted_at: null })
       .select(
         "name email phone idNumber kraPin nssf nhif bank status is_active role profileCompleted isVerified createdAt approved_at approved_by rejected_at rejection_reason"
       )
@@ -206,9 +208,9 @@ exports.getPendingUsers = async (req, res) => {
 
 exports.getApprovedUsers = async (req, res) => {
   try {
-    const users = await User.find({ status: "approved", is_active: true })
+    const users = await User.find({ status: "approved", is_active: true, deleted_at: null })
       .select(
-        "name email phone idNumber role status is_active isVerified profileCompleted approved_at approved_by createdAt"
+        "name email phone idNumber role status is_active isVerified profileCompleted verification_status verification_rejection_reason approved_at approved_by createdAt"
       )
       .populate("approved_by", "name email")
       .populate("branch_id", "name")
@@ -222,7 +224,7 @@ exports.getApprovedUsers = async (req, res) => {
 
 exports.getRejectedUsers = async (req, res) => {
   try {
-    const users = await User.find({ status: "rejected" })
+    const users = await User.find({ status: "rejected", deleted_at: null })
       .select("name email phone idNumber status is_active rejected_at rejection_reason createdAt")
       .sort({ rejected_at: -1, createdAt: -1 })
       .lean();
@@ -238,7 +240,7 @@ exports.approveUser = async (req, res) => {
     if (!["staff", "supervisor", "general_supervisor"].includes(role)) {
       return res.status(400).json({ success: false, message: "Invalid role." });
     }
-    const user = await User.findById(req.params.id);
+    const user = await User.findOne({ _id: req.params.id, deleted_at: null });
     if (!user) return res.status(404).json({ success: false, message: "User not found." });
     if (user.status !== "pending") {
       return res.status(400).json({ success: false, message: "Only pending users can be approved." });
@@ -299,7 +301,7 @@ exports.rejectUser = async (req, res) => {
     if (!reason) {
       return res.status(400).json({ success: false, message: "Rejection reason is required." });
     }
-    const user = await User.findById(req.params.id);
+    const user = await User.findOne({ _id: req.params.id, deleted_at: null });
     if (!user) return res.status(404).json({ success: false, message: "User not found." });
     if (user.status !== "pending") {
       return res.status(400).json({ success: false, message: "Only pending users can be rejected." });
@@ -364,7 +366,13 @@ exports.verifyUserProfile = async (req, res) => {
       });
     }
 
-    const before = { isVerified: user.isVerified, bankVerified: user.bank?.isVerified };
+    const before = {
+      isVerified: user.isVerified,
+      bankVerified: user.bank?.isVerified,
+      verification_status: user.verification_status,
+    };
+    user.verification_status = "verified";
+    user.verification_rejection_reason = null;
     user.isVerified = true;
     user.bank = { ...(user.bank || {}), isVerified: true, isActive: true };
     await user.save();
@@ -372,25 +380,90 @@ exports.verifyUserProfile = async (req, res) => {
     await Notification.create({
       user_id: user._id,
       type: "info",
-      message: "Your profile has been verified by admin.",
+      message: "Profile verified — payroll and bank processing are enabled.",
     });
 
     await sendMail({
       to: user.email,
       subject: "Profile verified",
-      html: `<p>Hello ${user.name},</p><p>Your profile and payment details have been verified successfully.</p>`,
-      text: `Hello ${user.name},\n\nYour profile and payment details have been verified successfully.\n`,
+      html: `<p>Hello ${user.name},</p><p>Your profile has been verified. Payroll and payment details are now active.</p>`,
+      text: `Hello ${user.name},\n\nYour profile has been verified. Payroll and payment details are now active.\n`,
     });
 
-    await writeAudit("VERIFY_USER_PROFILE", req, user._id, "users", before, { isVerified: true });
+    await writeAudit("VERIFY_USER_PROFILE", req, user._id, "users", before, {
+      isVerified: true,
+      verification_status: "verified",
+    });
 
     return res.json({
       success: true,
       message: "User verified successfully.",
-      data: { id: user._id, isVerified: user.isVerified },
+      data: { id: user._id, isVerified: user.isVerified, verification_status: user.verification_status },
     });
   } catch (err) {
     console.error("[verifyUserProfile]", err);
+    return res.status(500).json({ success: false, message: "Server error." });
+  }
+};
+
+exports.rejectProfileVerification = async (req, res) => {
+  try {
+    const reason = String(req.body.reason || "").trim();
+    if (reason.length < 2) {
+      return res.status(400).json({ success: false, message: "Rejection reason is required." });
+    }
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ success: false, message: "User not found." });
+    if (user.status !== "approved" || !user.is_active) {
+      return res.status(400).json({ success: false, message: "Only active approved accounts can be rejected at profile level." });
+    }
+    if (!user.profileCompleted) {
+      return res.status(400).json({ success: false, message: "User has not submitted a profile yet." });
+    }
+
+    const cur = resolveVerificationStatus(user);
+    if (!["pending", "verified"].includes(cur.status)) {
+      return res.status(400).json({
+        success: false,
+        message: "Profile verification can only be rejected when status is pending or verified.",
+      });
+    }
+
+    const before = {
+      verification_status: user.verification_status,
+      isVerified: user.isVerified,
+    };
+    user.verification_status = "rejected";
+    user.verification_rejection_reason = reason;
+    user.isVerified = false;
+    user.bank = { ...(user.bank || {}), isVerified: false, isActive: false };
+    await user.save();
+
+    await Notification.create({
+      user_id: user._id,
+      type: "warning",
+      message: `Fix your details and resubmit. Reason: ${reason}`,
+    });
+
+    await sendMail({
+      to: user.email,
+      subject: "Profile verification rejected",
+      html: `<p>Hello ${user.name},</p><p>Your profile verification was rejected.</p><p><strong>Reason:</strong> ${reason}</p><p>Please update your details and resubmit.</p>`,
+      text: `Hello ${user.name},\n\nYour profile verification was rejected.\nReason: ${reason}\n`,
+    });
+
+    await writeAudit("REJECT_PROFILE_VERIFICATION", req, user._id, "users", before, {
+      verification_status: "rejected",
+      verification_rejection_reason: reason,
+    });
+
+    return res.json({
+      success: true,
+      message: "Profile verification rejected.",
+      data: { id: user._id, verification_status: user.verification_status },
+    });
+  } catch (err) {
+    console.error("[rejectProfileVerification]", err);
     return res.status(500).json({ success: false, message: "Server error." });
   }
 };
@@ -727,7 +800,7 @@ exports.exportUsersXlsx = async (req, res) => {
 
 exports.getUserById = async (req, res) => {
   try {
-    const user = await User.findById(req.params.id).populate("branch_id");
+    const user = await User.findOne({ _id: req.params.id, deleted_at: null }).populate("branch_id");
     if (!user) return res.status(404).json({ success: false, message: "User not found." });
 
     const [profile, balance, sessions, recentAudit] = await Promise.all([
@@ -739,10 +812,114 @@ exports.getUserById = async (req, res) => {
 
     res.json({
       success: true,
-      data: { user, profile, leave_balance: balance, active_sessions: sessions.length, recent_audit: recentAudit },
+      data: {
+        full_name: user.name || null,
+        email: user.email || null,
+        phone: user.phone || profile?.phone || null,
+        role: user.role || null,
+        status: user.status || null,
+        is_active: Boolean(user.is_active),
+        verification_status: resolveVerificationStatus(user).status,
+        id_number: user.idNumber || null,
+        kra_pin: user.kraPin || null,
+        nssf: user.nssf || null,
+        nhif: user.nhif || null,
+        bank_account_number: user.bank?.accountNumber || null,
+        bank_name: user.bank?.bankName || null,
+        bank_branch: user.bank?.branch || null,
+        created_at: user.createdAt || null,
+        employment_type: profile?.type || null,
+        join_date: profile?.join_date || null,
+        address: profile?.address || null,
+        staff_id: profile?.staff_id || user.staffId || null,
+        active_sessions: sessions.length,
+        leave_balance: balance || null,
+        recent_audit: recentAudit,
+      },
     });
   } catch (err) {
     res.status(500).json({ success: false, message: "Server error." });
+  }
+};
+
+exports.updateUserRole = async (req, res) => {
+  try {
+    const { role } = req.body;
+    const user = await User.findOne({ _id: req.params.id, deleted_at: null });
+    if (!user) return res.status(404).json({ success: false, message: "User not found." });
+    if (user.status !== "approved") {
+      return res.status(400).json({ success: false, message: "Only approved users can have role changes." });
+    }
+    if (user.role === role) {
+      return res.status(400).json({ success: false, message: "User already has this role." });
+    }
+    if (user.role === "supervisor" && role !== "supervisor" && user.branch_id) {
+      const otherSupervisors = await User.countDocuments({
+        deleted_at: null,
+        branch_id: user.branch_id,
+        role: "supervisor",
+        is_active: true,
+        _id: { $ne: user._id },
+      });
+      if (otherSupervisors < 1) {
+        return res.status(400).json({
+          success: false,
+          message: "Cannot remove the last active supervisor from this branch.",
+        });
+      }
+    }
+
+    const before = { role: user.role };
+    user.role = role;
+    await user.save();
+
+    await writeAudit("USER_ROLE_CHANGED", req, user._id, "users", before, { role });
+    await Notification.create({
+      user_id: user._id,
+      type: "info",
+      message: `You have been promoted to ${role === "general_supervisor" ? "General Supervisor" : role[0].toUpperCase() + role.slice(1)}.`,
+    });
+
+    return res.json({ success: true, message: "User role updated.", data: { id: user._id, role: user.role } });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: "Server error." });
+  }
+};
+
+exports.updateEmploymentType = async (req, res) => {
+  try {
+    const { type, allow_downgrade = false } = req.body;
+    const user = await User.findOne({ _id: req.params.id, deleted_at: null }).select("_id role status");
+    if (!user) return res.status(404).json({ success: false, message: "User not found." });
+    if (!["staff", "supervisor"].includes(user.role)) {
+      return res.status(400).json({ success: false, message: "Employment type can only be changed for staff/supervisor users." });
+    }
+
+    const profile = await StaffProfile.findOne({ user_id: user._id });
+    if (!profile) return res.status(404).json({ success: false, message: "Staff profile not found." });
+    if (profile.type === type) {
+      return res.status(400).json({ success: false, message: "Employment type already set to this value." });
+    }
+
+    const levels = { casual: 1, reliever: 2, contract: 3 };
+    const from = levels[profile.type];
+    const to = levels[type];
+    if (!from || !to) return res.status(400).json({ success: false, message: "Invalid employment type." });
+    if (to > from + 1) {
+      return res.status(400).json({ success: false, message: "Skipping employment levels is not allowed." });
+    }
+    if (to < from && !allow_downgrade) {
+      return res.status(400).json({ success: false, message: "Downgrade is blocked unless allow_downgrade=true." });
+    }
+
+    const before = { employment_type: profile.type };
+    profile.type = type;
+    await profile.save();
+
+    await writeAudit("USER_EMPLOYMENT_CHANGED", req, user._id, "users", before, { employment_type: type }, { allow_downgrade });
+    return res.json({ success: true, message: "Employment type updated.", data: { user_id: user._id, type: profile.type } });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: "Server error." });
   }
 };
 
@@ -817,19 +994,54 @@ exports.updateUser = async (req, res) => {
 
 exports.deactivateUser = async (req, res) => {
   try {
-    const user = await User.findById(req.params.id);
+    const user = await User.findOne({ _id: req.params.id, deleted_at: null });
     if (!user) return res.status(404).json({ success: false, message: "User not found." });
     if (req.params.id === req.user._id.toString())
       return res.status(400).json({ success: false, message: "Cannot deactivate yourself." });
+    if (!user.is_active) {
+      return res.status(400).json({ success: false, message: "User is already deactivated." });
+    }
+    if (user.role === "supervisor" && user.branch_id) {
+      const otherSupervisors = await User.countDocuments({
+        deleted_at: null,
+        branch_id: user.branch_id,
+        role: "supervisor",
+        is_active: true,
+        _id: { $ne: user._id },
+      });
+      if (otherSupervisors < 1) {
+        return res.status(400).json({ success: false, message: "Cannot deactivate the last active supervisor for this branch." });
+      }
+    }
 
     await User.findByIdAndUpdate(req.params.id, { is_active: false });
     await revokeAllSessions(req.params.id);
     await writeAudit("DEACTIVATE_USER", req, user._id, "users", { is_active: true }, { is_active: false });
-    await Notification.create({ user_id: user._id, message: "Your account has been deactivated. Contact your administrator.", type: "warning" });
+    await Notification.create({ user_id: user._id, message: "Your account has been deactivated.", type: "warning" });
 
     res.json({ success: true, message: "User deactivated and sessions revoked." });
   } catch (err) {
     res.status(500).json({ success: false, message: "Server error." });
+  }
+};
+
+exports.activateUser = async (req, res) => {
+  try {
+    const user = await User.findOne({ _id: req.params.id, deleted_at: null });
+    if (!user) return res.status(404).json({ success: false, message: "User not found." });
+    if (user.is_active) return res.status(400).json({ success: false, message: "User is already active." });
+    if (user.status !== "approved") {
+      return res.status(400).json({ success: false, message: "Only approved users can be activated." });
+    }
+    if (!user.role) return res.status(400).json({ success: false, message: "Cannot activate user without an assigned role." });
+
+    user.is_active = true;
+    await user.save();
+    await writeAudit("ACTIVATE_USER", req, user._id, "users", { is_active: false }, { is_active: true });
+    await Notification.create({ user_id: user._id, message: "Your account has been reactivated.", type: "info" });
+    return res.json({ success: true, message: "User activated.", data: { id: user._id, is_active: user.is_active } });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: "Server error." });
   }
 };
 
@@ -855,25 +1067,22 @@ exports.deleteUser = async (req, res) => {
     if (!target) return res.status(404).json({ success: false, message: "User not found." });
     if (req.params.id === req.user._id.toString())
       return res.status(400).json({ success: false, message: "Cannot delete yourself." });
+    if (target.role === "admin") {
+      return res.status(400).json({ success: false, message: "Admin users cannot be deleted." });
+    }
+    if (target.deleted_at) {
+      return res.status(400).json({ success: false, message: "User already deleted." });
+    }
 
     const snapshot = { name: target.name, email: target.email, role: target.role };
-    await writeAudit("DELETE_USER", req, target._id, "users", snapshot, null, { permanent: true });
+    const now = new Date();
+    target.deleted_at = now;
+    target.is_active = false;
+    await target.save();
+    await revokeAllSessions(target._id);
+    await writeAudit("SOFT_DELETE_USER", req, target._id, "users", snapshot, { deleted_at: now, is_active: false });
 
-    await Promise.all([
-      User.findByIdAndDelete(target._id),
-      StaffProfile.deleteOne({ user_id: target._id }),
-      LeaveBalance.deleteOne({ staff_id: target._id }),
-      Session.deleteMany({ user_id: target._id }),
-      Attendance.deleteMany({ staff_id: target._id }),
-      Leave.deleteMany({ staff_id: target._id }),
-      Notification.deleteMany({ user_id: target._id }),
-      Uniform.deleteMany({ staff_id: target._id }),
-      Contract.deleteMany({ staff_id: target._id }),
-      Shift.deleteMany({ staff_id: target._id }),
-      OffDay.deleteMany({ staff_id: target._id }),
-    ]);
-
-    res.json({ success: true, message: `User "${target.name}" permanently deleted.` });
+    res.json({ success: true, message: `User "${target.name}" deleted (soft delete).` });
   } catch (err) {
     res.status(500).json({ success: false, message: "Server error." });
   }
@@ -1358,6 +1567,49 @@ exports.approveLeave = async (req, res) => {
     if (leave.type.startsWith("sick") && !leave.medical_document)
       return res.status(400).json({ success: false, message: "Cannot approve sick leave without medical document." });
 
+    const staffOid = leave.staff_id._id;
+    const profile = await StaffProfile.findOne({ user_id: staffOid });
+    if (!profile) {
+      return res.status(400).json({ success: false, message: "Staff profile not found for this leave request." });
+    }
+    let balance = await LeaveBalance.findOne({ staff_id: staffOid });
+    if (!balance) {
+      balance = await LeaveBalance.create({
+        staff_id: staffOid,
+        annual_balance: calcAnnualLeaveAccrual(profile.join_date),
+      });
+    }
+
+    if (leave.balance_reserved_pending === false) {
+      const days = leave.days_requested;
+      if (leave.type === "annual") {
+        if (days > balance.annual_balance) {
+          return res.status(400).json({
+            success: false,
+            message: `Insufficient annual leave to approve. Balance: ${balance.annual_balance.toFixed(2)} days.`,
+          });
+        }
+        balance.annual_balance -= days;
+      } else if (leave.type === "sick_full") {
+        if (!isSickLeaveEligible(profile.join_date)) {
+          return res.status(400).json({ success: false, message: "Staff not eligible for sick leave." });
+        }
+        if (days > 7 - balance.sick_full_used) {
+          return res.status(400).json({ success: false, message: "Insufficient full-pay sick leave to approve." });
+        }
+        balance.sick_full_used += days;
+      } else if (leave.type === "sick_half") {
+        if (!isSickLeaveEligible(profile.join_date)) {
+          return res.status(400).json({ success: false, message: "Staff not eligible for sick leave." });
+        }
+        if (days > 7 - balance.sick_half_used) {
+          return res.status(400).json({ success: false, message: "Insufficient half-pay sick leave to approve." });
+        }
+        balance.sick_half_used += days;
+      }
+      await balance.save();
+    }
+
     leave.status = "approved";
     leave.approved_by = req.user._id;
     leave.approved_at = new Date();
@@ -1388,13 +1640,18 @@ exports.rejectLeave = async (req, res) => {
       return res.status(400).json({ success: false, message: "Leave can only be rejected from pending state." });
     }
 
-    // Refund balance
-    const balance = await LeaveBalance.findOne({ staff_id: leave.staff_id._id });
-    if (balance) {
-      if (leave.type === "annual") balance.annual_balance += leave.days_requested;
-      else if (leave.type === "sick_full") balance.sick_full_used = Math.max(0, balance.sick_full_used - leave.days_requested);
-      else if (leave.type === "sick_half") balance.sick_half_used = Math.max(0, balance.sick_half_used - leave.days_requested);
-      await balance.save();
+    // Refund balance only if deducted at request time (legacy), not for new deferred-deduction leaves
+    if (leave.balance_reserved_pending !== false) {
+      const balance = await LeaveBalance.findOne({ staff_id: leave.staff_id._id });
+      if (balance) {
+        if (leave.type === "annual") balance.annual_balance += leave.days_requested;
+        else if (leave.type === "sick_full") {
+          balance.sick_full_used = Math.max(0, balance.sick_full_used - leave.days_requested);
+        } else if (leave.type === "sick_half") {
+          balance.sick_half_used = Math.max(0, balance.sick_half_used - leave.days_requested);
+        }
+        await balance.save();
+      }
     }
 
     leave.status = "rejected";

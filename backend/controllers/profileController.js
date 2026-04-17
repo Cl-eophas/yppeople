@@ -1,5 +1,11 @@
 const User = require("../models/User");
 const StaffProfile = require("../models/StaffProfile");
+const Notification = require("../models/Notification");
+const {
+  isPayrollUnlocked,
+  verificationPayload,
+  resolveVerificationStatus,
+} = require("../utils/profileVerification");
 
 exports.getProfile = async (req, res) => {
   try {
@@ -16,6 +22,7 @@ exports.getProfile = async (req, res) => {
         phone: sp?.phone,
         address: sp?.address,
         pay_rate: sp?.pay_rate,
+        ...verificationPayload(user),
       },
     });
   } catch (err) {
@@ -56,6 +63,15 @@ exports.updateProfile = async (req, res) => {
     const user = await User.findById(req.user._id);
     if (!user) return res.status(404).json({ success: false, message: "User not found." });
 
+    const prevBank = user.bank || {};
+    const bankChanged =
+      String(prevBank.accountNumber || "").trim() !== String(accountNumber).trim() ||
+      String(prevBank.bankName || "").trim() !== String(bankName).trim() ||
+      String(prevBank.branch || "").trim() !== String(bankBranch).trim();
+
+    const wasUnlocked = isPayrollUnlocked(user);
+    const priorEffective = resolveVerificationStatus(user).status;
+
     user.name = fullName.trim();
     user.email = email.trim().toLowerCase();
     user.idNumber = String(idNumber).trim();
@@ -64,22 +80,39 @@ exports.updateProfile = async (req, res) => {
     user.nhif = String(nhif).trim();
     user.phone = String(phone).trim();
     user.bank = {
-      ...(user.bank || {}),
+      ...prevBank,
       accountNumber: String(accountNumber).trim(),
       bankName: String(bankName).trim(),
       branch: String(bankBranch).trim(),
-      isVerified: false,
-      isActive: false,
     };
+    if (bankChanged) {
+      user.bank.isVerified = false;
+      user.bank.isActive = false;
+    }
+
     user.profileCompleted = true;
-    user.isVerified = false;
+
+    if (wasUnlocked && !bankChanged) {
+      // Admin-verified profile: non-bank edits do not reset payroll verification.
+    } else {
+      user.verification_status = "pending";
+      user.isVerified = false;
+      user.verification_rejection_reason = null;
+      if (priorEffective !== "pending") {
+        await Notification.create({
+          user_id: user._id,
+          type: "info",
+          message: "Profile submitted for admin verification.",
+        });
+      }
+    }
 
     await user.save();
 
     return res.json({
       success: true,
       message: "Profile updated successfully.",
-      data: { profileCompleted: user.profileCompleted },
+      data: { profileCompleted: user.profileCompleted, ...verificationPayload(user) },
     });
   } catch (err) {
     res.status(500).json({ success: false, message: "Server error." });

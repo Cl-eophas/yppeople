@@ -25,6 +25,24 @@ router.get("/users/pending", guard, admin.getPendingUsers);
 router.get("/users/approved", guard, admin.getApprovedUsers);
 router.get("/users/rejected", guard, admin.getRejectedUsers);
 router.get("/users/:id", guard, [param("id").isMongoId()], validate, admin.getUserById);
+router.put(
+  "/users/:id/role",
+  guard,
+  [param("id").isMongoId(), body("role").isIn(["general_supervisor", "supervisor", "staff"])],
+  validate,
+  admin.updateUserRole
+);
+router.put(
+  "/users/:id/employment",
+  guard,
+  [
+    param("id").isMongoId(),
+    body("type").isIn(["casual", "reliever", "contract"]),
+    body("allow_downgrade").optional().isBoolean(),
+  ],
+  validate,
+  admin.updateEmploymentType
+);
 router.patch("/users/:id", guard, [param("id").isMongoId()], validate, admin.updateUser);
 router.put(
   "/users/:id/approve",
@@ -41,6 +59,13 @@ router.put(
   admin.rejectUser
 );
 router.put("/users/:id/verify", guard, [param("id").isMongoId()], validate, admin.verifyUserProfile);
+router.put(
+  "/users/:id/reject-profile",
+  guard,
+  [param("id").isMongoId(), body("reason").trim().isLength({ min: 2, max: 500 })],
+  validate,
+  admin.rejectProfileVerification
+);
 router.post(
   "/create-user",
   guard,
@@ -70,6 +95,22 @@ router.patch(
   [param("id").isMongoId()],
   validate,
   admin.deactivateUser
+);
+router.put(
+  "/users/:id/deactivate",
+  guard,
+  destructiveLimiter,
+  [param("id").isMongoId()],
+  validate,
+  admin.deactivateUser
+);
+router.put(
+  "/users/:id/activate",
+  guard,
+  destructiveLimiter,
+  [param("id").isMongoId()],
+  validate,
+  admin.activateUser
 );
 
 router.delete(

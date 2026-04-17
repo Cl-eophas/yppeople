@@ -1,8 +1,18 @@
 const Attendance = require("../models/Attendance");
 const StaffProfile = require("../models/StaffProfile");
+const User = require("../models/User");
+const { isPayrollUnlocked } = require("../utils/profileVerification");
 
 exports.getPaySummary = async (req, res) => {
   try {
+    const user = await User.findById(req.user._id);
+    if (!user || !isPayrollUnlocked(user)) {
+      return res.status(403).json({
+        success: false,
+        message: "Complete profile verification to access payroll",
+      });
+    }
+
     const now = new Date();
     const month = parseInt(req.query.month, 10) || now.getMonth() + 1;
     const year = parseInt(req.query.year, 10) || now.getFullYear();

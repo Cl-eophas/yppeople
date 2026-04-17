@@ -5,6 +5,7 @@ const StaffProfile = require("../models/StaffProfile");
 const LeaveBalance = require("../models/LeaveBalance");
 const Session = require("../models/Session");
 const SecurityEvent = require("../models/SecurityEvent");
+const Notification = require("../models/Notification");
 const { signAccess, issueRefreshToken, verifyRefreshToken,
         revokeAllSessions, setRefreshCookie, clearRefreshCookie } = require("../utils/tokens");
 const { validatePassword } = require("../utils/passwordPolicy");
@@ -12,6 +13,7 @@ const { isNewDevice, recordEvent } = require("../utils/intrusion");
 const { calcAnnualLeaveAccrual } = require("../utils/dateHelpers");
 const { nextYPStaffId } = require("../utils/staffId");
 const { nextYPStaffIdV2 } = require("../utils/staffIdV2");
+const { resolveVerificationStatus, verificationPayload } = require("../utils/profileVerification");
 
 const getIP = (req) => req.ip || req.headers["x-forwarded-for"]?.split(",")[0] || "unknown";
 const getUA = (req) => req.headers["user-agent"] || "unknown";
@@ -37,6 +39,9 @@ exports.login = async (req, res) => {
       await new Promise(r => setTimeout(r, 300)); // constant-time delay
       await recordEvent("failed_login", { email: identTrim, ip_address: ip, user_agent: ua });
       return res.status(401).json({ success: false, message: "Invalid credentials." });
+    }
+    if (user.deleted_at) {
+      return res.status(403).json({ success: false, message: "Account unavailable. Contact admin." });
     }
 
     // Lockout check
@@ -74,6 +79,14 @@ exports.login = async (req, res) => {
       await user.save({ validateModifiedOnly: true });
     }
 
+    if (effectiveStatus === "rejected") {
+      return res.status(403).json({
+        success: false,
+        message: "Your account registration was rejected. Contact admin if you believe this is an error.",
+        code: "ACCOUNT_REJECTED",
+        status: effectiveStatus,
+      });
+    }
     if (effectiveStatus !== "approved" || !user.is_active) {
       return res.status(403).json({
         success: false,
@@ -87,13 +100,6 @@ exports.login = async (req, res) => {
         success: false,
         message: "Account approved but role assignment is missing. Contact admin.",
         code: "ROLE_NOT_ASSIGNED",
-      });
-    }
-    if (user.role !== "admin" && !user.isVerified) {
-      return res.status(403).json({
-        success: false,
-        message: "Account approved but awaiting profile verification.",
-        code: "NOT_VERIFIED",
       });
     }
 
@@ -136,6 +142,18 @@ exports.login = async (req, res) => {
 
     setRefreshCookie(res, refreshToken, expiresAt);
 
+    const v = resolveVerificationStatus(user);
+    const profileBanner =
+      !user.profileCompleted
+        ? "⚠️ Complete your profile"
+        : v.status === "pending"
+          ? "⏳ Waiting for admin verification"
+          : v.status === "rejected"
+            ? `❌ Verification failed: ${v.reason || "See admin feedback"}`
+            : v.status === "verified"
+              ? null
+              : "⚠️ Your profile is incomplete. Complete verification to enable payroll.";
+
     return res.json({
       success: true,
       message: "Login successful.",
@@ -149,7 +167,8 @@ exports.login = async (req, res) => {
         role: user.role,
         branch_id: user.branch_id,
         new_device_warning: newDevice && user.role === "admin",
-        profile_warning: user.profileCompleted ? null : "Complete your profile to enable payments",
+        profile_warning: profileBanner,
+        ...verificationPayload(user),
       },
     });
   } catch (err) {
@@ -209,6 +228,8 @@ exports.completeProfile = async (req, res) => {
     const user = await User.findById(req.user._id);
     if (!user) return res.status(404).json({ success: false, message: "User not found." });
 
+    const priorEffective = resolveVerificationStatus(user).status;
+
     const idOk = /^[0-9]{7,8}$/.test(String(idNumber || ""));
     const kraOk = /^[A-Z][0-9]{9}[A-Z]$/.test(String(kraPin || "").toUpperCase());
     const phoneOk = /^(\+254|0)[0-9]{9}$/.test(String(phone || ""));
@@ -230,15 +251,34 @@ exports.completeProfile = async (req, res) => {
       isActive: false,
     };
     if (!user.staffId) user.staffId = await nextYPStaffIdV2();
-    user.status = "pending";
-    user.is_active = false;
-    user.role = null;
+    const wasApproved = user.status === "approved" && user.is_active;
+    if (!wasApproved) {
+      user.status = "pending";
+      user.is_active = false;
+      user.role = null;
+    }
     user.profileCompleted = true;
+    user.verification_status = "pending";
+    user.verification_rejection_reason = null;
     user.isVerified = false;
 
     await user.save();
 
-    return res.json({ success: true, message: "Profile completed. Awaiting admin approval.", staffId: user.staffId });
+    if (wasApproved && priorEffective !== "pending") {
+      await Notification.create({
+        user_id: user._id,
+        type: "info",
+        message: "Profile submitted for admin verification.",
+      });
+    }
+
+    return res.json({
+      success: true,
+      message: wasApproved
+        ? "Profile updated. Payroll verification is pending admin review."
+        : "Profile completed. Awaiting admin approval.",
+      staffId: user.staffId,
+    });
   } catch (err) {
     console.error("[completeProfile]", err);
     return res.status(500).json({ success: false, message: "Server error." });
@@ -268,7 +308,7 @@ exports.refresh = async (req, res) => {
     }
 
     const user = await User.findById(user_id);
-    if (!user || !user.is_active) {
+    if (!user || !user.is_active || user.deleted_at) {
       clearRefreshCookie(res);
       return res.status(401).json({ success: false, message: "Account not available." });
     }
@@ -407,7 +447,8 @@ exports.changePassword = async (req, res) => {
 exports.getMe = async (req, res) => {
   try {
     const user = await User.findById(req.user._id).populate("branch_id").select("-password");
-    return res.json({ success: true, data: user });
+    if (!user) return res.status(404).json({ success: false, message: "User not found." });
+    return res.json({ success: true, data: { ...user.toObject(), ...verificationPayload(user) } });
   } catch (err) {
     return res.status(500).json({ success: false, message: "Server error." });
   }
@@ -438,6 +479,14 @@ exports.googleOAuthSuccess = async (req, res) => {
       user.status = effectiveStatus;
       await user.save({ validateModifiedOnly: true });
     }
+    if (effectiveStatus === "rejected") {
+      return res.status(403).json({
+        success: false,
+        message: "Your account registration was rejected. Contact admin if you believe this is an error.",
+        code: "ACCOUNT_REJECTED",
+        status: effectiveStatus,
+      });
+    }
     if (effectiveStatus !== "approved" || !user.is_active) {
       return res.status(403).json({
         success: false,
@@ -453,17 +502,22 @@ exports.googleOAuthSuccess = async (req, res) => {
         code: "ROLE_NOT_ASSIGNED",
       });
     }
-    if (user.role !== "admin" && !user.isVerified) {
-      return res.status(403).json({
-        success: false,
-        message: "Account approved but awaiting profile verification.",
-        code: "NOT_VERIFIED",
-      });
-    }
 
     const { token: accessToken } = signAccess(user._id, user.role);
     const { raw: refreshToken, expiresAt } = await issueRefreshToken(user._id, getIP(req), getUA(req));
     setRefreshCookie(res, refreshToken, expiresAt);
+
+    const gv = resolveVerificationStatus(user);
+    const gProfileBanner =
+      !user.profileCompleted
+        ? "⚠️ Complete your profile"
+        : gv.status === "pending"
+          ? "⏳ Waiting for admin verification"
+          : gv.status === "rejected"
+            ? `❌ Verification failed: ${gv.reason || "See admin feedback"}`
+            : gv.status === "verified"
+              ? null
+              : "⚠️ Your profile is incomplete. Complete verification to enable payroll.";
 
     return res.json({
       success: true,
@@ -477,8 +531,9 @@ exports.googleOAuthSuccess = async (req, res) => {
         email: user.email,
         role: user.role,
         status: user.status,
-        isVerified: user.isVerified,
         profileCompleted: user.profileCompleted,
+        profile_warning: gProfileBanner,
+        ...verificationPayload(user),
       },
     });
   } catch (err) {
