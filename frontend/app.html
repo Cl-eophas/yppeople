@@ -1154,6 +1154,15 @@ function staffDashView() {
     </div>
     <div class="page-body">
       <div id="s-verify-banner" class="verify-banner" style="display:none;" role="status"></div>
+      <div id="casual-branch-bar" class="card" style="display:none;margin-bottom:14px;padding:14px 16px;">
+        <div class="card-head" style="margin-bottom:8px;">Select work branch (casual)</div>
+        <p style="font-size:12px;color:var(--muted);margin:0 0 10px;">You must pick an active branch before clock-in. Changes are limited to once per week.</p>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+          <select id="casual-branch-sel" class="form-select" style="min-width:220px;"></select>
+          <button type="button" class="btn btn-primary btn-sm" onclick="saveCasualBranch()">Save branch</button>
+        </div>
+        <div id="casual-branch-msg" style="font-size:12px;margin-top:8px;"></div>
+      </div>
       <div class="clock-panel">
         <div class="clock-face" id="live-clock">00:00:00</div>
         <div id="gps-chip" class="gps-chip gps-wait">⏳ Locating GPS…</div>
@@ -1205,6 +1214,27 @@ async function loadStaffDash() {
       vb.style.display = 'block';
       vb.setAttribute('data-status', d.verification.verification_status || 'not_submitted');
       vb.textContent = d.verification.banner || '';
+    }
+
+    const cbar = $('casual-branch-bar');
+    if (cbar) {
+      if (d.staff && d.staff.needs_branch_selection) {
+        cbar.style.display = 'block';
+        if (!cbar.dataset.loaded) {
+          try {
+            const br = await api('GET', '/staff/branches/available');
+            const sel = $('casual-branch-sel');
+            if (sel) {
+              sel.innerHTML = (br.data || [])
+                .map((b) => `<option value="${b._id}">${escHtml(b.name)}</option>`)
+                .join('');
+            }
+            cbar.dataset.loaded = '1';
+          } catch (_) {}
+        }
+      } else {
+        cbar.style.display = 'none';
+      }
     }
 
     // Stats
@@ -3021,11 +3051,12 @@ async function loadUsers(){
           <button type="button" class="btn btn-danger btn-sm" onclick="rejectApprovedProfile('${u._id}')">Reject</button>`;
       };
       $('users-content').innerHTML=res.data.length===0?'<p class="empty">No approved users.</p>'
-      :`<table class="tbl"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Verification</th><th>Status</th><th>Approved At</th><th>Actions</th></tr></thead>
+      :`<table class="tbl"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Employment</th><th>Verification</th><th>Status</th><th>Approved At</th><th>Actions</th></tr></thead>
       <tbody>${res.data.map(u=>`<tr>
         <td style="font-weight:700;">${escHtml(u.name||'—')}</td>
         <td style="font-size:12px;color:var(--muted);">${escHtml(u.email||'—')}</td>
         <td><span class="badge b-${u.role||'staff'}">${escHtml(u.role||'—')}</span></td>
+        <td style="font-size:12px;">${escHtml(u.employment_type||'—')}</td>
         <td>${vBadge(u)}</td>
         <td><span class="badge b-approved">✔ Approved</span></td>
         <td style="font-size:12px;">${u.approved_at?fdt(u.approved_at):'—'}</td>
@@ -3047,49 +3078,154 @@ async function loadUsers(){
       return;
     }
 
-    const res=await api('GET','/admin/users/pending');
-    $('users-content').innerHTML=res.data.length===0?'<p class="empty">No pending users.</p>'
-      :`<table class="tbl"><thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>ID</th><th>Profile Submission</th><th>Role</th><th>Actions</th></tr></thead>
-      <tbody>${res.data.map(u=>`<tr id="pending-user-${u._id}">
-        <td style="font-weight:700;">${escHtml(u.name||'—')}</td>
-        <td style="font-size:12px;color:var(--muted);">${escHtml(u.email||'—')}</td>
-        <td style="font-size:12px;">${escHtml(u.phone||'—')}</td>
-        <td style="font-size:12px;">${escHtml(u.idNumber||'—')}</td>
+    if (!window._adminBranchesCache) {
+      try {
+        const br = await api('GET', '/admin/branches');
+        window._adminBranchesCache = br.data || [];
+      } catch (_) {
+        window._adminBranchesCache = [];
+      }
+    }
+    const branchOpts =
+      (window._adminBranchesCache || [])
+        .map((b) => `<option value="${b._id}">${escHtml(b.name)}</option>`)
+        .join('') || '<option value="">(no branches)</option>';
+
+    const res = await api('GET', '/admin/users/pending');
+    $('users-content').innerHTML =
+      res.data.length === 0
+        ? '<p class="empty">No pending users.</p>'
+        : `<table class="tbl"><thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>ID</th><th>Profile</th><th>Role</th><th>Employment</th><th>Branch</th><th>Actions</th></tr></thead>
+      <tbody>${res.data
+        .map(
+          (u) => `<tr id="pending-user-${u._id}">
+        <td style="font-weight:700;">${escHtml(u.name || '—')}</td>
+        <td style="font-size:12px;color:var(--muted);">${escHtml(u.email || '—')}</td>
+        <td style="font-size:12px;">${escHtml(u.phone || '—')}</td>
+        <td style="font-size:12px;">${escHtml(u.idNumber || '—')}</td>
         <td style="font-size:11px;line-height:1.45;">
-          KRA: ${escHtml(u.kraPin||'—')}<br/>
-          NSSF: ${escHtml(u.nssf||'—')} · NHIF: ${escHtml(u.nhif||'—')}<br/>
-          Bank: ${escHtml(u.bank?.bankName||'—')} (${escHtml(u.bank?.branch||'—')})<br/>
-          Account: ${escHtml(u.bank?.accountNumber||'—')}
+          KRA: ${escHtml(u.kraPin || '—')}<br/>
+          NSSF: ${escHtml(u.nssf || '—')} · NHIF: ${escHtml(u.nhif || '—')}<br/>
+          Bank: ${escHtml(u.bank?.bankName || '—')} (${escHtml(u.bank?.branch || '—')})<br/>
+          Account: ${escHtml(u.bank?.accountNumber || '—')}
         </td>
         <td>
-          <select class="form-select" id="pending-role-${u._id}" style="min-width:170px;">
+          <select class="form-select" id="pending-role-${u._id}" style="min-width:170px;" onchange="syncPendingApproveRow('${u._id}')">
             <option value="">Select role</option>
             <option value="staff">staff</option>
             <option value="supervisor">supervisor</option>
             <option value="general_supervisor">general_supervisor</option>
           </select>
         </td>
+        <td>
+          <select class="form-select" id="pending-emp-${u._id}" style="min-width:130px;display:none;">
+            <option value="">employment</option>
+            <option value="casual">casual</option>
+            <option value="reliever">reliever</option>
+            <option value="contract">contract</option>
+          </select>
+          <div id="pending-emp-hint-${u._id}" style="font-size:11px;color:var(--muted);margin-top:4px;"></div>
+        </td>
+        <td>
+          <select class="form-select" id="pending-br-${u._id}" style="min-width:170px;display:none;">
+            <option value="">— branch —</option>
+            ${branchOpts}
+          </select>
+        </td>
         <td style="display:flex;gap:6px;flex-wrap:wrap;">
           <button id="approve-btn-${u._id}" class="btn btn-success btn-sm" onclick="approvePendingUser('${u._id}')">Approve</button>
           <button id="reject-btn-${u._id}" class="btn btn-danger btn-sm" onclick="rejectPendingUser('${u._id}')">Reject</button>
         </td>
-      </tr>`).join('')}</tbody></table>`;
-  }catch(e){$('users-content').innerHTML=`<p style="color:var(--danger);">${e.message}</p>`;}
+      </tr>`
+        )
+        .join('')}</tbody></table>`;
+  } catch (e) {
+    $('users-content').innerHTML = `<p style="color:var(--danger);">${e.message}</p>`;
+  }
 }
 
-async function approvePendingUser(id){
-  const role=$(`pending-role-${id}`)?.value||'';
-  if(!role){alert('Select a role before approval.');return;}
-  const btnA=$(`approve-btn-${id}`), btnR=$(`reject-btn-${id}`);
-  if(btnA) btnA.disabled=true;
-  if(btnR) btnR.disabled=true;
-  try{
-    await api('PUT',`/admin/users/${id}/approve`,{role});
+function syncPendingApproveRow(id) {
+  const role = $(`pending-role-${id}`)?.value || '';
+  const emp = $(`pending-emp-${id}`);
+  const br = $(`pending-br-${id}`);
+  const hint = $(`pending-emp-hint-${id}`);
+  if (!emp || !br || !hint) return;
+  emp.style.display = 'none';
+  br.style.display = 'none';
+  hint.textContent = '';
+  if (role === 'staff') {
+    emp.style.display = 'block';
+    br.style.display = 'block';
+    hint.textContent = 'Casual: leave branch empty. Reliever/contract: pick branch.';
+  } else if (role === 'supervisor') {
+    br.style.display = 'block';
+    hint.textContent = 'Supervisor requires a branch.';
+  } else if (role === 'general_supervisor') {
+    br.style.display = 'block';
+    hint.textContent = 'Branch optional for general supervisor.';
+  }
+}
+
+async function approvePendingUser(id) {
+  const role = $(`pending-role-${id}`)?.value || '';
+  if (!role) {
+    alert('Select a role before approval.');
+    return;
+  }
+  const body = { role };
+  if (role === 'staff') {
+    const emp = $(`pending-emp-${id}`)?.value || '';
+    if (!emp) {
+      alert('Select employment type for staff.');
+      return;
+    }
+    body.employment_type = emp;
+    if (emp !== 'casual') {
+      const bid = $(`pending-br-${id}`)?.value || '';
+      if (!bid) {
+        alert('Select a branch for non-casual staff.');
+        return;
+      }
+      body.branch_id = bid;
+    }
+  } else if (role === 'supervisor') {
+    const bid = $(`pending-br-${id}`)?.value || '';
+    if (!bid) {
+      alert('Select a branch for supervisor.');
+      return;
+    }
+    body.branch_id = bid;
+  } else if (role === 'general_supervisor') {
+    const bid = $(`pending-br-${id}`)?.value || '';
+    if (bid) body.branch_id = bid;
+  }
+  const btnA = $(`approve-btn-${id}`),
+    btnR = $(`reject-btn-${id}`);
+  if (btnA) btnA.disabled = true;
+  if (btnR) btnR.disabled = true;
+  try {
+    await api('PUT', `/admin/users/${id}/approve`, body);
     loadUsers();
-  }catch(e){
-    if(btnA) btnA.disabled=false;
-    if(btnR) btnR.disabled=false;
+  } catch (e) {
+    if (btnA) btnA.disabled = false;
+    if (btnR) btnR.disabled = false;
     alert(e.message);
+  }
+}
+
+async function saveCasualBranch() {
+  const sel = $('casual-branch-sel');
+  const id = sel?.value;
+  if (!id) {
+    flash('casual-branch-msg', 'Select a branch.', 'warning');
+    return;
+  }
+  try {
+    await api('PUT', '/staff/my-branch', { branch_id: id });
+    flash('casual-branch-msg', 'Branch saved. You can clock in within this branch.', 'success');
+    loadStaffDash();
+  } catch (e) {
+    flash('casual-branch-msg', e.message);
   }
 }
 
@@ -3135,9 +3271,36 @@ async function runDemoteSupervisor(id,name){
   try{await api('POST','/admin/demote-role',{user_id:id});loadUsers();}catch(e){alert(e.message);}
 }
 
-async function runPromoteEmployment(id,newType,name){
-  if(!confirm(`Are you sure you want to upgrade employment for ${name}?`)) return;
-  try{await api('POST','/admin/promote-employment',{staff_id:id,new_type:newType});loadUsers();}catch(e){alert(e.message);}
+async function runPromoteEmployment(id, newType, name) {
+  if (!confirm(`Are you sure you want to upgrade employment for ${name} to ${newType}?`)) return;
+  let branch_id;
+  if (newType === 'reliever') {
+    if (!BRANCHES || !BRANCHES.length) {
+      try {
+        const br = await api('GET', '/admin/branches');
+        BRANCHES = br.data || [];
+      } catch (_) {
+        BRANCHES = [];
+      }
+    }
+    const labels = (BRANCHES || []).map((b) => `${b.name} (${b._id})`).join('\n');
+    branch_id = prompt(`branch_id required when leaving casual.\n\nBranches:\n${labels}`);
+    if (!branch_id || !String(branch_id).trim()) {
+      alert('branch_id is required.');
+      return;
+    }
+    branch_id = String(branch_id).trim();
+  }
+  try {
+    await api('POST', '/admin/promote-employment', {
+      staff_id: id,
+      new_type: newType,
+      ...(branch_id ? { branch_id } : {}),
+    });
+    loadUsers();
+  } catch (e) {
+    alert(e.message);
+  }
 }
 
 async function doDeactivate(id,name){

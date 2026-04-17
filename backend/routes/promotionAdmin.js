@@ -28,7 +28,11 @@ router.post("/demote-role", guard, [body("user_id").isMongoId()], validate, prom
 router.post(
   "/promote-employment",
   guard,
-  [body("staff_id").isMongoId(), body("new_type").isIn(["reliever", "contract"])],
+  [
+    body("staff_id").isMongoId(),
+    body("new_type").isIn(["reliever", "contract"]),
+    body("branch_id").optional({ checkFalsy: true }).isMongoId(),
+  ],
   validate,
   promotion.promoteEmployment
 );

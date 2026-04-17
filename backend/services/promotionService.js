@@ -2,6 +2,7 @@ const User = require("../models/User");
 const StaffProfile = require("../models/StaffProfile");
 const Attendance = require("../models/Attendance");
 const SecurityEvent = require("../models/SecurityEvent");
+const { assertActiveBranch } = require("../utils/branchEmployment");
 
 const EMP_ORDER = { casual: 0, reliever: 1, contract: 2 };
 
@@ -100,7 +101,7 @@ async function demoteRole({ user_id }) {
   return { ok: true, user, old_value: oldRole, new_value: "staff", condition_warnings: cond.warnings };
 }
 
-async function promoteEmployment({ staff_id, new_type }) {
+async function promoteEmployment({ staff_id, new_type, branch_id }) {
   if (!["casual", "reliever", "contract"].includes(new_type))
     return { ok: false, code: 400, message: "Invalid employment type." };
 
@@ -111,6 +112,9 @@ async function promoteEmployment({ staff_id, new_type }) {
 
   const profile = await StaffProfile.findOne({ user_id: staff_id });
   if (!profile) return { ok: false, code: 404, message: "Staff profile not found." };
+  if (profile.type === "supervisor") {
+    return { ok: false, code: 400, message: "Use branch/role tools for supervisor employment." };
+  }
 
   const cur = profile.type;
   if (cur === new_type) return { ok: false, code: 409, message: "Already at this employment type." };
@@ -122,6 +126,19 @@ async function promoteEmployment({ staff_id, new_type }) {
       message: "Employment progression must follow casual → reliever → contract with no skipping.",
     };
 
+  if (cur === "casual" && new_type !== "casual") {
+    const brCheck = await assertActiveBranch(branch_id || user.branch_id);
+    if (!brCheck.ok) {
+      return {
+        ok: false,
+        code: 400,
+        message: "branch_id is required when promoting from casual (assign fixed branch).",
+      };
+    }
+    user.branch_id = brCheck.branch._id;
+    user.last_branch_change = new Date();
+  }
+
   const cond = await checkOptionalPromotionConditions(staff_id);
   if (cond.enforce && !cond.ok) {
     return { ok: false, code: 400, message: cond.warnings.join(" ") || "Promotion conditions not met." };
@@ -130,8 +147,14 @@ async function promoteEmployment({ staff_id, new_type }) {
   const old_value = profile.type;
   profile.type = new_type;
   await profile.save();
+  user.employment_type = user.role === "supervisor" ? "supervisor" : new_type;
+  if (new_type === "casual") {
+    user.branch_id = null;
+    user.last_branch_change = null;
+  }
+  await user.save();
 
-  return { ok: true, profile, old_value, new_value: new_type, condition_warnings: cond.warnings };
+  return { ok: true, profile, user, old_value, new_value: new_type, condition_warnings: cond.warnings };
 }
 
 module.exports = { promoteRole, demoteRole, promoteEmployment, checkOptionalPromotionConditions };

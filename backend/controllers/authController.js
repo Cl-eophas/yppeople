@@ -14,6 +14,12 @@ const { calcAnnualLeaveAccrual } = require("../utils/dateHelpers");
 const { nextYPStaffId } = require("../utils/staffId");
 const { nextYPStaffIdV2 } = require("../utils/staffIdV2");
 const { resolveVerificationStatus, verificationPayload } = require("../utils/profileVerification");
+const {
+  normalizeEmploymentForRole,
+  requiresFixedBranch,
+  assertActiveBranch,
+  staffProfileTypeFor,
+} = require("../utils/branchEmployment");
 
 const getIP = (req) => req.ip || req.headers["x-forwarded-for"]?.split(",")[0] || "unknown";
 const getUA = (req) => req.headers["user-agent"] || "unknown";
@@ -105,6 +111,14 @@ exports.login = async (req, res) => {
 
     // Reset failed attempts on success
     await user.resetLoginAttempts();
+
+    if (["staff", "supervisor"].includes(user.role) && !user.employment_type) {
+      const sp = await StaffProfile.findOne({ user_id: user._id });
+      if (sp) {
+        user.employment_type = user.role === "supervisor" ? "supervisor" : sp.type;
+        await user.save({ validateModifiedOnly: true });
+      }
+    }
 
     // Anomaly: new device detection
     const newDevice = await isNewDevice(user._id, ip, ua);
@@ -362,27 +376,68 @@ exports.register = async (req, res) => {
     if (!["admin", "general_supervisor", "supervisor", "staff"].includes(assignedRole)) {
       return res.status(400).json({ success: false, message: "Invalid role." });
     }
-    const user = await User.create({
+
+    let resolvedBranch = branch_id || undefined;
+    let resolvedEmployment;
+    if (assignedRole === "staff") {
+      const st = staff_type || "casual";
+      const norm = normalizeEmploymentForRole("staff", st);
+      if (!norm.ok) return res.status(400).json({ success: false, message: norm.message });
+      resolvedEmployment = norm.employment_type;
+      if (resolvedEmployment === "casual") {
+        if (branch_id) {
+          return res.status(400).json({ success: false, message: "Casual staff cannot be assigned a fixed branch at registration." });
+        }
+        resolvedBranch = undefined;
+      } else if (requiresFixedBranch(resolvedEmployment)) {
+        const br = await assertActiveBranch(branch_id);
+        if (!br.ok) return res.status(400).json({ success: false, message: br.message });
+        resolvedBranch = br.branch._id;
+      }
+    } else if (assignedRole === "supervisor") {
+      const norm = normalizeEmploymentForRole("supervisor");
+      resolvedEmployment = norm.employment_type;
+      const br = await assertActiveBranch(branch_id);
+      if (!br.ok) return res.status(400).json({ success: false, message: br.message });
+      resolvedBranch = br.branch._id;
+    } else if (assignedRole === "general_supervisor") {
+      const norm = normalizeEmploymentForRole("general_supervisor");
+      resolvedEmployment = norm.employment_type;
+      if (branch_id) {
+        const br = await assertActiveBranch(branch_id);
+        if (!br.ok) return res.status(400).json({ success: false, message: br.message });
+        resolvedBranch = br.branch._id;
+      } else {
+        resolvedBranch = undefined;
+      }
+    }
+
+    const userPayload = {
       name,
       email,
       password,
       role: assignedRole,
-      branch_id,
+      branch_id: resolvedBranch,
       status: "approved",
       is_active: true,
       isVerified: false,
       profileCompleted: false,
-    });
+    };
+    if (resolvedEmployment) userPayload.employment_type = resolvedEmployment;
+    if (resolvedEmployment === "casual") userPayload.last_branch_change = null;
+
+    const user = await User.create(userPayload);
     if (!user.staffId) user.staffId = await nextYPStaffIdV2();
     await user.save({ validateModifiedOnly: true });
 
     if (["staff", "supervisor"].includes(assignedRole)) {
       const jd = join_date ? new Date(join_date) : new Date();
       const staffId = await nextYPStaffId(jd);
+      const profileType = staffProfileTypeFor(assignedRole, resolvedEmployment || staff_type || "casual");
       await StaffProfile.create({
         user_id: user._id,
         staff_id: staffId,
-        type: staff_type || "casual",
+        type: profileType,
         join_date: jd,
         pay_rate: 0,
       });

@@ -1,7 +1,9 @@
 
 const Attendance = require("../models/Attendance");
 const User = require("../models/User");
+const StaffProfile = require("../models/StaffProfile");
 const { isWithinGeofence } = require("../utils/geo");
+const { requiresFixedBranch } = require("../utils/branchEmployment");
 const { getTodayString } = require("../utils/dateHelpers");
 const { contractStaffMayWork } = require("../utils/contractCheck");
 const { emitAttendanceChanged } = require("../realtime");
@@ -26,8 +28,32 @@ exports.clockIn = async (req, res) => {
     }
 
     const user = await User.findById(staffId).populate("branch_id");
-    if (!user.branch_id) {
+    if (!user) return res.status(404).json({ success: false, message: "User not found." });
+
+    if (["staff", "supervisor"].includes(user.role) && !user.employment_type) {
+      const sp = await StaffProfile.findOne({ user_id: staffId });
+      if (sp) {
+        user.employment_type = user.role === "supervisor" ? "supervisor" : sp.type;
+        await user.save({ validateModifiedOnly: true });
+      }
+    }
+    if (["staff", "supervisor"].includes(user.role) && !user.employment_type) {
+      return res.status(403).json({
+        success: false,
+        message: "Account is missing employment_type. Ask an administrator to complete your assignment.",
+      });
+    }
+
+    if (requiresFixedBranch(user.employment_type) && !user.branch_id) {
       return res.status(400).json({ success: false, message: "Not assigned to a branch." });
+    }
+    if (user.employment_type === "casual" && !user.branch_id) {
+      return res.status(400).json({
+        success: false,
+        code: "BRANCH_REQUIRED",
+        message:
+          "Select your work branch before clock-in. Use GET /api/staff/branches/available then PUT /api/staff/my-branch.",
+      });
     }
 
     const branch = user.branch_id;
@@ -89,10 +115,13 @@ exports.clockIn = async (req, res) => {
     }
     const locIn = { latitude: parseFloat(latitude), longitude: parseFloat(longitude) };
 
+    const branchOid = branch._id || branch;
+
     const attendance = existing
       ? await Attendance.findByIdAndUpdate(existing._id,
           {
             clock_in: now,
+            branch_id: branchOid,
             location_in: locIn,
             shift_start: shiftStart,
             status,
@@ -101,8 +130,15 @@ exports.clockIn = async (req, res) => {
           },
           { new: true })
       : await Attendance.create({
-          staff_id: staffId, date: today, clock_in: now,
-          location_in: locIn, shift_start: shiftStart, status, late_minutes: lateMinutes, is_supervisor_entry: false,
+          staff_id: staffId,
+          branch_id: branchOid,
+          date: today,
+          clock_in: now,
+          location_in: locIn,
+          shift_start: shiftStart,
+          status,
+          late_minutes: lateMinutes,
+          is_supervisor_entry: false,
         });
 
     if (status === "late") {
@@ -172,6 +208,7 @@ exports.clockOut = async (req, res) => {
     if (!user.branch_id) {
       return res.status(400).json({ success: false, message: "Not assigned to a branch." });
     }
+    const branchOid = user.branch_id._id || user.branch_id;
 
     const { withinFence, distance } = isWithinGeofence(
       parseFloat(latitude), parseFloat(longitude),
@@ -197,6 +234,7 @@ exports.clockOut = async (req, res) => {
     const now = new Date();
     attendance.clock_out = now;
     attendance.location_out = { latitude: parseFloat(latitude), longitude: parseFloat(longitude) };
+    if (!attendance.branch_id) attendance.branch_id = branchOid;
     await attendance.save();
 
     emitAttendanceChanged({ branch_id: user.branch_id._id || user.branch_id, date: today });

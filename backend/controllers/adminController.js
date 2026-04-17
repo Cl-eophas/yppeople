@@ -25,6 +25,14 @@ const { emitAttendanceChanged } = require("../realtime");
 const { escapeRegExp, matchUserIdsByStaffSearch } = require("../utils/staffSearch");
 const { resolveVerificationStatus } = require("../utils/profileVerification");
 const { calcAnnualLeaveAccrual, isSickLeaveEligible } = require("../utils/dateHelpers");
+const { nextYPStaffId } = require("../utils/staffId");
+const { nextYPStaffIdV2 } = require("../utils/staffIdV2");
+const {
+  requiresFixedBranch,
+  normalizeEmploymentForRole,
+  staffProfileTypeFor,
+  assertActiveBranch,
+} = require("../utils/branchEmployment");
 
 /** Debounce identical attendance exports per admin (month bucket) to reduce duplicate downloads. */
 const recentAttendanceExports = new Map();
@@ -210,7 +218,7 @@ exports.getApprovedUsers = async (req, res) => {
   try {
     const users = await User.find({ status: "approved", is_active: true, deleted_at: null })
       .select(
-        "name email phone idNumber role status is_active isVerified profileCompleted verification_status verification_rejection_reason approved_at approved_by createdAt"
+        "name email phone idNumber role status is_active isVerified profileCompleted verification_status verification_rejection_reason employment_type branch_id last_branch_change approved_at approved_by createdAt"
       )
       .populate("approved_by", "name email")
       .populate("branch_id", "name")
@@ -236,7 +244,7 @@ exports.getRejectedUsers = async (req, res) => {
 
 exports.approveUser = async (req, res) => {
   try {
-    const { role } = req.body;
+    const { role, employment_type: empRaw, branch_id: branchBody } = req.body;
     if (!["staff", "supervisor", "general_supervisor"].includes(role)) {
       return res.status(400).json({ success: false, message: "Invalid role." });
     }
@@ -252,7 +260,43 @@ exports.approveUser = async (req, res) => {
       role: user.role,
       approved_at: user.approved_at,
       approved_by: user.approved_by,
+      branch_id: user.branch_id,
+      employment_type: user.employment_type,
     };
+
+    if (role === "staff" && !empRaw) {
+      return res.status(400).json({ success: false, message: "employment_type is required when approving staff." });
+    }
+
+    const norm = normalizeEmploymentForRole(role, empRaw);
+    if (!norm.ok) return res.status(400).json({ success: false, message: norm.message });
+    const employment_type = norm.employment_type;
+
+    if (employment_type === "casual") {
+      if (branchBody) {
+        return res.status(400).json({
+          success: false,
+          message: "Casual workers cannot receive a fixed branch at approval. Branch must be NULL until they select one at clock-in.",
+        });
+      }
+      user.branch_id = null;
+      user.last_branch_change = null;
+    } else if (requiresFixedBranch(employment_type)) {
+      const brCheck = await assertActiveBranch(branchBody);
+      if (!brCheck.ok) return res.status(400).json({ success: false, message: brCheck.message });
+      user.branch_id = brCheck.branch._id;
+    } else {
+      if (branchBody) {
+        const brCheck = await assertActiveBranch(branchBody);
+        if (!brCheck.ok) return res.status(400).json({ success: false, message: brCheck.message });
+        user.branch_id = brCheck.branch._id;
+      } else {
+        user.branch_id = null;
+      }
+    }
+
+    user.employment_type = employment_type;
+
     const now = new Date();
     user.role = role;
     user.status = "approved";
@@ -261,6 +305,33 @@ exports.approveUser = async (req, res) => {
     user.approved_by = req.user._id;
     user.rejected_at = null;
     user.rejection_reason = null;
+
+    if (["staff", "supervisor"].includes(role)) {
+      const joinDate = new Date();
+      const profileType = staffProfileTypeFor(role, employment_type);
+      let profile = await StaffProfile.findOne({ user_id: user._id });
+      const legacyStaffId = profile?.staff_id || (await nextYPStaffId(joinDate));
+      if (!profile) {
+        await StaffProfile.create({
+          user_id: user._id,
+          staff_id: legacyStaffId,
+          type: profileType,
+          join_date: joinDate,
+          pay_rate: 0,
+        });
+        if (!user.staffId) user.staffId = await nextYPStaffIdV2();
+      } else {
+        profile.type = profileType;
+        if (!profile.join_date) profile.join_date = joinDate;
+        await profile.save();
+      }
+      if (role === "staff") {
+        const accrued = calcAnnualLeaveAccrual(joinDate);
+        let bal = await LeaveBalance.findOne({ staff_id: user._id });
+        if (!bal) await LeaveBalance.create({ staff_id: user._id, annual_balance: accrued });
+      }
+    }
+
     await user.save();
 
     await Notification.create({
@@ -283,12 +354,30 @@ exports.approveUser = async (req, res) => {
       user._id,
       "users",
       before,
-      { status: "approved", is_active: true, role, approved_at: now, approved_by: req.user._id },
+      {
+        status: "approved",
+        is_active: true,
+        role,
+        employment_type,
+        branch_id: user.branch_id,
+        approved_at: now,
+        approved_by: req.user._id,
+      },
       { notify: true }
     );
     emitUserStatusChanged({ user_id: user._id, status: "approved", role: user.role });
 
-    res.json({ success: true, message: "User approved.", data: { id: user._id, status: user.status, role: user.role } });
+    res.json({
+      success: true,
+      message: "User approved.",
+      data: {
+        id: user._id,
+        status: user.status,
+        role: user.role,
+        employment_type: user.employment_type,
+        branch_id: user.branch_id,
+      },
+    });
   } catch (err) {
     console.error("[approveUser]", err);
     res.status(500).json({ success: false, message: "Server error." });
@@ -470,7 +559,7 @@ exports.rejectProfileVerification = async (req, res) => {
 
 exports.createUserByAdmin = async (req, res) => {
   try {
-    const { fullName, email, role, branch_id } = req.body;
+    const { fullName, email, role, branch_id, employment_type: empRaw } = req.body;
     const cleanEmail = String(email || "").toLowerCase().trim();
     const cleanName = String(fullName || "").trim();
 
@@ -478,25 +567,59 @@ exports.createUserByAdmin = async (req, res) => {
       return res.status(400).json({ success: false, message: "Invalid role." });
     }
 
+    let resolvedEmployment;
+    let resolvedBranch;
+
+    if (role === "admin") {
+      resolvedBranch = branch_id || undefined;
+    } else {
+      if (["staff", "supervisor"].includes(role) && !empRaw) {
+        return res.status(400).json({ success: false, message: "employment_type is required for this role." });
+      }
+      const norm = normalizeEmploymentForRole(role, empRaw);
+      if (!norm.ok) return res.status(400).json({ success: false, message: norm.message });
+      resolvedEmployment = norm.employment_type;
+      if (resolvedEmployment === "casual") {
+        if (branch_id) {
+          return res.status(400).json({ success: false, message: "Casual users must not be assigned a branch at creation." });
+        }
+        resolvedBranch = undefined;
+      } else if (requiresFixedBranch(resolvedEmployment)) {
+        const brCheck = await assertActiveBranch(branch_id);
+        if (!brCheck.ok) return res.status(400).json({ success: false, message: brCheck.message });
+        resolvedBranch = brCheck.branch._id;
+      } else if (branch_id) {
+        const brCheck = await assertActiveBranch(branch_id);
+        if (!brCheck.ok) return res.status(400).json({ success: false, message: brCheck.message });
+        resolvedBranch = brCheck.branch._id;
+      } else {
+        resolvedBranch = undefined;
+      }
+    }
+
     const exists = await User.findOne({ email: cleanEmail });
     if (exists) return res.status(400).json({ success: false, message: "Email already in use." });
 
     const generatedPassword = crypto.randomBytes(8).toString("base64url");
-    const staffId = await require("../utils/staffIdV2").nextYPStaffIdV2();
+    const staffId = await nextYPStaffIdV2();
 
-    const user = await User.create({
+    const userPayload = {
       staffId,
       name: cleanName,
       email: cleanEmail,
       password: generatedPassword,
       role,
-      branch_id: branch_id || undefined,
+      branch_id: resolvedBranch,
       status: "approved",
       is_active: true,
       isVerified: false,
       profileCompleted: false,
       force_password_reset: true,
-    });
+    };
+    if (resolvedEmployment) userPayload.employment_type = resolvedEmployment;
+    if (resolvedEmployment === "casual") userPayload.last_branch_change = null;
+
+    const user = await User.create(userPayload);
 
     await Notification.create({
       user_id: user._id,
@@ -512,13 +635,38 @@ exports.createUserByAdmin = async (req, res) => {
       text: `Hello ${user.name},\n\nYour account has been created.\nEmail: ${user.email}\nTemporary password: ${generatedPassword}\nStaff ID: ${user.staffId}\nLogin: ${appUrl}\n`,
     });
 
+    if (["staff", "supervisor"].includes(role)) {
+      const joinDate = new Date();
+      const profileType = staffProfileTypeFor(role, resolvedEmployment || "contract");
+      const legacyStaffId = await nextYPStaffId(joinDate);
+      await StaffProfile.create({
+        user_id: user._id,
+        staff_id: legacyStaffId,
+        type: profileType,
+        join_date: joinDate,
+        pay_rate: 0,
+      });
+      if (role === "staff") {
+        const accrued = calcAnnualLeaveAccrual(joinDate);
+        await LeaveBalance.create({ staff_id: user._id, annual_balance: accrued });
+      }
+    }
+
     await writeAudit(
       "ADMIN_CREATE_USER",
       req,
       user._id,
       "users",
       null,
-      { name: user.name, email: user.email, role: user.role, status: user.status, staffId: user.staffId }
+      {
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        status: user.status,
+        staffId: user.staffId,
+        employment_type: user.employment_type,
+        branch_id: user.branch_id,
+      }
     );
 
     return res.status(201).json({
@@ -530,6 +678,8 @@ exports.createUserByAdmin = async (req, res) => {
         email: user.email,
         role: user.role,
         staffId: user.staffId,
+        employment_type: user.employment_type,
+        branch_id: user.branch_id,
       },
     });
   } catch (err) {
@@ -561,25 +711,36 @@ exports.getForcedClockRequests = async (req, res) => {
 
 exports.approveForcedClockRequest = async (req, res) => {
   try {
-    const request = await ForceClockRequest.findById(req.params.id).populate("user_id", "name branch_id");
+    const request = await ForceClockRequest.findById(req.params.id).populate("user_id", "name branch_id employment_type");
     if (!request) return res.status(404).json({ success: false, message: "Request not found." });
     if (request.status !== "pending") {
       return res.status(400).json({ success: false, message: "Request has already been reviewed." });
     }
 
+    const uid = request.user_id._id || request.user_id;
+    const branchRef = request.user_id.branch_id;
+    if (!branchRef) {
+      return res.status(400).json({
+        success: false,
+        message: "User has no branch on file; forced clock-in cannot create attendance without branch_id.",
+      });
+    }
+
     const now = new Date();
     const attendance = await Attendance.findOneAndUpdate(
-      { staff_id: request.user_id._id, date: request.date },
+      { staff_id: uid, date: request.date },
       {
         $set: {
           clock_in: now,
+          branch_id: branchRef,
           status: "forced",
           is_forced: true,
           notes: `Forced clock-in approved by admin. Reason: ${request.reason}`,
         },
         $setOnInsert: {
-          staff_id: request.user_id._id,
+          staff_id: uid,
           date: request.date,
+          branch_id: branchRef,
         },
       },
       { upsert: true, new: true }
@@ -803,12 +964,42 @@ exports.getUserById = async (req, res) => {
     const user = await User.findOne({ _id: req.params.id, deleted_at: null }).populate("branch_id");
     if (!user) return res.status(404).json({ success: false, message: "User not found." });
 
-    const [profile, balance, sessions, recentAudit] = await Promise.all([
+    const since = new Date();
+    since.setDate(since.getDate() - 30);
+    const sinceStr = since.toISOString().slice(0, 10);
+
+    const [profile, balance, sessions, recentAudit, attendanceSummary] = await Promise.all([
       StaffProfile.findOne({ user_id: user._id }),
       LeaveBalance.findOne({ staff_id: user._id }),
       Session.find({ user_id: user._id, is_revoked: false, expires_at: { $gt: new Date() } }),
       AuditLog.find({ target_id: user._id }).sort({ timestamp: -1 }).limit(10),
+      Attendance.aggregate([
+        { $match: { staff_id: user._id, date: { $gte: sinceStr } } },
+        {
+          $group: {
+            _id: null,
+            days_recorded: { $sum: 1 },
+            present_like: {
+              $sum: {
+                $cond: [
+                  { $in: ["$status", ["present", "late", "forced", "supervisor_assisted"]] },
+                  1,
+                  0,
+                ],
+              },
+            },
+          },
+        },
+      ]),
     ]);
+
+    const attSum = attendanceSummary[0] || { days_recorded: 0, present_like: 0 };
+    const branch =
+      user.branch_id && typeof user.branch_id === "object"
+        ? { id: user.branch_id._id, name: user.branch_id.name, address: user.branch_id.address }
+        : user.branch_id
+          ? { id: user.branch_id }
+          : null;
 
     res.json({
       success: true,
@@ -828,13 +1019,22 @@ exports.getUserById = async (req, res) => {
         bank_name: user.bank?.bankName || null,
         bank_branch: user.bank?.branch || null,
         created_at: user.createdAt || null,
-        employment_type: profile?.type || null,
+        employment_type: user.employment_type || profile?.type || null,
+        profile_staff_type: profile?.type || null,
+        branch,
+        last_branch_change: user.last_branch_change || null,
         join_date: profile?.join_date || null,
         address: profile?.address || null,
         staff_id: profile?.staff_id || user.staffId || null,
         active_sessions: sessions.length,
         leave_balance: balance || null,
         recent_audit: recentAudit,
+        attendance_summary: {
+          period_days: 30,
+          since: sinceStr,
+          days_recorded: attSum.days_recorded,
+          present_like: attSum.present_like,
+        },
       },
     });
   } catch (err) {
@@ -888,8 +1088,8 @@ exports.updateUserRole = async (req, res) => {
 
 exports.updateEmploymentType = async (req, res) => {
   try {
-    const { type, allow_downgrade = false } = req.body;
-    const user = await User.findOne({ _id: req.params.id, deleted_at: null }).select("_id role status");
+    const { type, allow_downgrade = false, branch_id: branchBody } = req.body;
+    const user = await User.findOne({ _id: req.params.id, deleted_at: null });
     if (!user) return res.status(404).json({ success: false, message: "User not found." });
     if (!["staff", "supervisor"].includes(user.role)) {
       return res.status(400).json({ success: false, message: "Employment type can only be changed for staff/supervisor users." });
@@ -897,6 +1097,12 @@ exports.updateEmploymentType = async (req, res) => {
 
     const profile = await StaffProfile.findOne({ user_id: user._id });
     if (!profile) return res.status(404).json({ success: false, message: "Staff profile not found." });
+    if (profile.type === "supervisor") {
+      return res.status(400).json({
+        success: false,
+        message: "Branch supervisor employment is managed via role and branch assignment, not this ladder.",
+      });
+    }
     if (profile.type === type) {
       return res.status(400).json({ success: false, message: "Employment type already set to this value." });
     }
@@ -912,13 +1118,79 @@ exports.updateEmploymentType = async (req, res) => {
       return res.status(400).json({ success: false, message: "Downgrade is blocked unless allow_downgrade=true." });
     }
 
-    const before = { employment_type: profile.type };
+    if (profile.type === "casual" && type !== "casual") {
+      const brCheck = await assertActiveBranch(branchBody || user.branch_id);
+      if (!brCheck.ok) {
+        return res.status(400).json({
+          success: false,
+          message: "branch_id is required when promoting from casual to a fixed-branch employment type.",
+        });
+      }
+      user.branch_id = brCheck.branch._id;
+      user.last_branch_change = new Date();
+    }
+
+    const before = { employment_type: profile.type, user_employment: user.employment_type, branch_id: user.branch_id };
     profile.type = type;
     await profile.save();
+    user.employment_type = user.role === "supervisor" ? "supervisor" : type;
+    if (type === "casual") {
+      user.branch_id = null;
+      user.last_branch_change = null;
+    }
+    await user.save();
 
     await writeAudit("USER_EMPLOYMENT_CHANGED", req, user._id, "users", before, { employment_type: type }, { allow_downgrade });
-    return res.json({ success: true, message: "Employment type updated.", data: { user_id: user._id, type: profile.type } });
+    return res.json({
+      success: true,
+      message: "Employment type updated.",
+      data: { user_id: user._id, type: profile.type, employment_type: user.employment_type, branch_id: user.branch_id },
+    });
   } catch (err) {
+    return res.status(500).json({ success: false, message: "Server error." });
+  }
+};
+
+exports.setUserBranch = async (req, res) => {
+  try {
+    const { branch_id } = req.body;
+    const user = await User.findOne({ _id: req.params.id, deleted_at: null });
+    if (!user) return res.status(404).json({ success: false, message: "User not found." });
+    if (!["staff", "supervisor", "general_supervisor"].includes(user.role)) {
+      return res.status(400).json({ success: false, message: "Branch assignment applies to staff-type roles." });
+    }
+
+    const brCheck = await assertActiveBranch(branch_id);
+    if (!brCheck.ok) return res.status(400).json({ success: false, message: brCheck.message });
+
+    if (requiresFixedBranch(user.employment_type) || user.role === "supervisor") {
+      const before = { branch_id: user.branch_id };
+      user.branch_id = brCheck.branch._id;
+      await user.save();
+      await writeAudit("USER_BRANCH_SET", req, user._id, "users", before, { branch_id: user.branch_id });
+      return res.json({ success: true, message: "Branch updated.", data: { id: user._id, branch_id: user.branch_id } });
+    }
+
+    if (user.role === "general_supervisor" || user.employment_type === "general_supervisor") {
+      const before = { branch_id: user.branch_id };
+      user.branch_id = brCheck.branch._id;
+      await user.save();
+      await writeAudit("USER_BRANCH_SET", req, user._id, "users", before, { branch_id: user.branch_id });
+      return res.json({ success: true, message: "Branch updated.", data: { id: user._id, branch_id: user.branch_id } });
+    }
+
+    if (user.employment_type === "casual") {
+      const before = { branch_id: user.branch_id, last_branch_change: user.last_branch_change };
+      user.branch_id = brCheck.branch._id;
+      user.last_branch_change = new Date();
+      await user.save();
+      await writeAudit("ADMIN_CASUAL_BRANCH_SET", req, user._id, "users", before, { branch_id: user.branch_id });
+      return res.json({ success: true, message: "Branch assigned.", data: { id: user._id, branch_id: user.branch_id } });
+    }
+
+    return res.status(400).json({ success: false, message: "Branch change not applicable for this employment type." });
+  } catch (err) {
+    console.error("[setUserBranch]", err);
     return res.status(500).json({ success: false, message: "Server error." });
   }
 };
@@ -934,6 +1206,20 @@ exports.updateUser = async (req, res) => {
 
     const user = await User.findById(req.params.id);
     if (!user) return res.status(404).json({ success: false, message: "User not found." });
+
+    if (updates.branch_id === null || updates.branch_id === "") {
+      if (requiresFixedBranch(user.employment_type) || user.role === "supervisor") {
+        return res.status(400).json({
+          success: false,
+          message: "Cannot remove branch from non-casual workers.",
+        });
+      }
+    }
+    if (updates.branch_id) {
+      const brCheck = await assertActiveBranch(updates.branch_id);
+      if (!brCheck.ok) return res.status(400).json({ success: false, message: brCheck.message });
+      updates.branch_id = brCheck.branch._id;
+    }
 
     // Prevent admin from downgrading themselves
     if (req.params.id === req.user._id.toString() && updates.role && updates.role !== "admin")
@@ -1435,14 +1721,23 @@ exports.deleteBranch = async (req, res) => {
 exports.updateStaffProfileType = async (req, res) => {
   try {
     const { type } = req.body;
-    if (!["casual", "reliever", "contract"].includes(type)) {
-      return res.status(400).json({ success: false, message: "type must be casual, reliever, or contract." });
+    if (!["casual", "reliever", "contract", "supervisor"].includes(type)) {
+      return res.status(400).json({ success: false, message: "type must be casual, reliever, contract, or supervisor." });
     }
     const profile = await StaffProfile.findOne({ user_id: req.params.id });
     if (!profile) return res.status(404).json({ success: false, message: "Staff profile not found." });
+    const user = await User.findById(req.params.id);
     const before = profile.type;
     profile.type = type;
     await profile.save();
+    if (user && ["staff", "supervisor"].includes(user.role)) {
+      user.employment_type = user.role === "supervisor" ? "supervisor" : type;
+      if (type === "casual") {
+        user.branch_id = null;
+        user.last_branch_change = null;
+      }
+      await user.save({ validateModifiedOnly: true });
+    }
     await writeAudit("UPDATE_EMPLOYMENT_TYPE", req, req.params.id, "users", { employment_type: before }, { employment_type: type });
     res.json({ success: true, message: "Employment type updated.", data: profile });
   } catch (err) {

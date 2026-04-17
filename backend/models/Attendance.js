@@ -3,6 +3,8 @@ const mongoose = require("mongoose");
 const attendanceSchema = new mongoose.Schema(
   {
     staff_id: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+    /** Set on every clock-in/out path; indexed for branch reports (legacy rows may be null). */
+    branch_id: { type: mongoose.Schema.Types.ObjectId, ref: "Branch" },
     date: { type: String, required: true },
     clock_in: Date,
     clock_out: Date,

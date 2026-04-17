@@ -59,8 +59,8 @@ exports.demoteRole = async (req, res) => {
 
 exports.promoteEmployment = async (req, res) => {
   try {
-    const { staff_id, new_type } = req.body;
-    const r = await promotionService.promoteEmployment({ staff_id, new_type });
+    const { staff_id, new_type, branch_id } = req.body;
+    const r = await promotionService.promoteEmployment({ staff_id, new_type, branch_id });
     if (!r.ok) return res.status(r.code).json({ success: false, message: r.message });
     await writePromotionAudit(req, "PROMOTION", staff_id, r.old_value, r.new_value, { kind: "employment" });
     res.json({

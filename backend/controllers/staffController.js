@@ -4,8 +4,10 @@ const Attendance = require("../models/Attendance");
 const LeaveBalance = require("../models/LeaveBalance");
 const Notification = require("../models/Notification");
 const Shift = require("../models/Shift");
+const Branch = require("../models/Branch");
 const { getTodayString } = require("../utils/dateHelpers");
 const { verificationPayload, resolveVerificationStatus } = require("../utils/profileVerification");
+const { assertActiveBranch, canCasualSwitchBranch } = require("../utils/branchEmployment");
 
 exports.getDashboard = async (req, res) => {
   try {
@@ -58,7 +60,9 @@ exports.getDashboard = async (req, res) => {
           name: user.name,
           staff_id: profile?.staff_id,
           type: profile?.type,
+          employment_type: user.employment_type || profile?.type || null,
           branch: user.branch_id ? { id: user.branch_id._id, name: user.branch_id.name } : null,
+          needs_branch_selection: user.employment_type === "casual" && !user.branch_id,
         },
         verification: {
           ...verificationPayload(user),
@@ -94,5 +98,51 @@ exports.getDashboard = async (req, res) => {
   } catch (err) {
     console.error("[staff.getDashboard]", err);
     res.status(500).json({ success: false, message: "Server error." });
+  }
+};
+
+exports.listBranchesAvailable = async (req, res) => {
+  try {
+    const rows = await Branch.find({ is_active: true })
+      .select("name address latitude longitude radius_meters default_shift_start_time clock_in_window_minutes")
+      .sort({ name: 1 })
+      .lean();
+    return res.json({ success: true, data: rows });
+  } catch (err) {
+    console.error("[listBranchesAvailable]", err);
+    return res.status(500).json({ success: false, message: "Server error." });
+  }
+};
+
+exports.selectCasualBranch = async (req, res) => {
+  try {
+    const { branch_id } = req.body;
+    const user = await User.findById(req.user._id);
+    if (!user) return res.status(404).json({ success: false, message: "User not found." });
+    if (user.employment_type !== "casual") {
+      return res.status(403).json({
+        success: false,
+        message: "Branch self-selection is only available for casual employees.",
+      });
+    }
+
+    const brCheck = await assertActiveBranch(branch_id);
+    if (!brCheck.ok) return res.status(400).json({ success: false, message: brCheck.message });
+
+    const gate = canCasualSwitchBranch(user, brCheck.branch._id);
+    if (!gate.ok) return res.status(403).json({ success: false, message: gate.message });
+
+    user.branch_id = brCheck.branch._id;
+    user.last_branch_change = new Date();
+    await user.save();
+
+    return res.json({
+      success: true,
+      message: "Work branch updated. Clock in within this branch area.",
+      data: { branch_id: user.branch_id },
+    });
+  } catch (err) {
+    console.error("[selectCasualBranch]", err);
+    return res.status(500).json({ success: false, message: "Server error." });
   }
 };

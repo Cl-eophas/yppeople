@@ -4,7 +4,7 @@ const staffProfileSchema = new mongoose.Schema(
   {
     user_id: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, unique: true },
     staff_id: { type: String, required: true, unique: true },
-    type: { type: String, enum: ["casual", "reliever", "contract"], required: true },
+    type: { type: String, enum: ["casual", "reliever", "contract", "supervisor"], required: true },
     join_date: { type: Date, required: true },
     phone: { type: String, trim: true },
     address: { type: String, trim: true },

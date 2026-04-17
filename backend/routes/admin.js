@@ -39,6 +39,7 @@ router.put(
     param("id").isMongoId(),
     body("type").isIn(["casual", "reliever", "contract"]),
     body("allow_downgrade").optional().isBoolean(),
+    body("branch_id").optional({ checkFalsy: true }).isMongoId(),
   ],
   validate,
   admin.updateEmploymentType
@@ -47,9 +48,21 @@ router.patch("/users/:id", guard, [param("id").isMongoId()], validate, admin.upd
 router.put(
   "/users/:id/approve",
   guard,
-  [param("id").isMongoId(), body("role").isIn(["general_supervisor", "supervisor", "staff"])],
+  [
+    param("id").isMongoId(),
+    body("role").isIn(["general_supervisor", "supervisor", "staff"]),
+    body("employment_type").optional().isIn(["casual", "reliever", "contract", "supervisor", "general_supervisor"]),
+    body("branch_id").optional({ checkFalsy: true }).isMongoId(),
+  ],
   validate,
   admin.approveUser
+);
+router.put(
+  "/users/:id/branch",
+  guard,
+  [param("id").isMongoId(), body("branch_id").isMongoId()],
+  validate,
+  admin.setUserBranch
 );
 router.put(
   "/users/:id/reject",
@@ -73,7 +86,8 @@ router.post(
     body("fullName").trim().isLength({ min: 2, max: 120 }),
     body("email").isEmail().normalizeEmail(),
     body("role").isIn(["admin", "general_supervisor", "supervisor", "staff"]),
-    body("branch_id").optional().isMongoId(),
+    body("branch_id").optional({ checkFalsy: true }).isMongoId(),
+    body("employment_type").optional().isIn(["casual", "reliever", "contract", "supervisor", "general_supervisor"]),
   ],
   validate,
   admin.createUserByAdmin
@@ -83,7 +97,7 @@ router.get("/export-users", guard, exportLimiter, admin.exportUsersXlsx);
 router.patch(
   "/users/:id/staff-profile",
   guard,
-  [param("id").isMongoId(), body("type").isIn(["casual", "reliever", "contract"])],
+  [param("id").isMongoId(), body("type").isIn(["casual", "reliever", "contract", "supervisor"])],
   validate,
   admin.updateStaffProfileType
 );

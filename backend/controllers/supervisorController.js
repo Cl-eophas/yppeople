@@ -162,6 +162,12 @@ exports.manualClockIn = async (req, res) => {
     if (!staffUser) {
       return res.status(403).json({ success: false, message: "Staff not in your branch." });
     }
+    if (!staffUser.branch_id) {
+      return res.status(400).json({
+        success: false,
+        message: "Staff member has no branch on file; manual attendance entry is blocked.",
+      });
+    }
 
     const contractOk = await contractStaffMayWork(staff_id);
     if (!contractOk.ok) return res.status(403).json({ success: false, message: contractOk.message });
@@ -179,11 +185,19 @@ exports.manualClockIn = async (req, res) => {
     const record = existing
       ? await Attendance.findByIdAndUpdate(
           existing._id,
-          { clock_in: now, shift_start: shiftStart, status: "supervisor_assisted", is_supervisor_entry: true, notes: reason },
+          {
+            clock_in: now,
+            branch_id: staffUser.branch_id,
+            shift_start: shiftStart,
+            status: "supervisor_assisted",
+            is_supervisor_entry: true,
+            notes: reason,
+          },
           { new: true }
         )
       : await Attendance.create({
           staff_id,
+          branch_id: staffUser.branch_id,
           date: today,
           clock_in: now,
           shift_start: shiftStart,

@@ -50,6 +50,13 @@ const userSchema = new mongoose.Schema(
     isVerified: { type: Boolean, default: false },
     profileCompleted: { type: Boolean, default: false },
     branch_id: { type: mongoose.Schema.Types.ObjectId, ref: "Branch" },
+    /** casual | reliever | contract | supervisor | general_supervisor */
+    employment_type: {
+      type: String,
+      enum: ["casual", "reliever", "contract", "supervisor", "general_supervisor"],
+    },
+    /** Last time a casual user self-selected / changed branch (weekly limit). */
+    last_branch_change: { type: Date, default: null },
     is_active: { type: Boolean, default: false }, // false until approved
     deleted_at: { type: Date, default: null },
     failed_login_attempts: { type: Number, default: 0 },
