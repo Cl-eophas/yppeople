@@ -33,6 +33,8 @@ const {
   staffProfileTypeFor,
   assertActiveBranch,
 } = require("../utils/branchEmployment");
+const promotionService = require("../services/promotionService");
+const { notifyAdmins } = require("../utils/notifyAdmins");
 
 /** Debounce identical attendance exports per admin (month bucket) to reduce duplicate downloads. */
 const recentAttendanceExports = new Map();
@@ -175,12 +177,15 @@ exports.getAllUsers = async (req, res) => {
       const or = [
         { name: { $regex: term, $options: "i" } },
         { email: { $regex: term, $options: "i" } },
+        { phone: { $regex: term, $options: "i" } },
+        { idNumber: { $regex: term, $options: "i" } },
       ];
       if (profIds.length) or.push({ _id: { $in: profIds } });
       query.$or = or;
     }
 
-    const users = await User.find(query).populate("branch_id", "name").sort({ createdAt: -1 }).lean();
+    const lim = Math.min(Math.max(parseInt(req.query.limit, 10) || 500, 1), 500);
+    const users = await User.find(query).populate("branch_id", "name").sort({ createdAt: -1 }).limit(lim).lean();
     if (req.query.include_profile === "true") {
       const profileUserIds = users.filter((u) => ["staff", "supervisor"].includes(u.role)).map((u) => u._id);
       if (profileUserIds.length) {
@@ -203,7 +208,7 @@ exports.getPendingUsers = async (req, res) => {
   try {
     const users = await User.find({ status: "pending", deleted_at: null })
       .select(
-        "name email phone idNumber kraPin nssf nhif bank status is_active role profileCompleted isVerified createdAt approved_at approved_by rejected_at rejection_reason"
+        "name email phone idNumber kraPin nssf nhif bank status is_active role profileCompleted isVerified employment_type createdAt approved_at approved_by rejected_at rejection_reason"
       )
       .populate("branch_id", "name")
       .sort({ createdAt: -1 })
@@ -238,6 +243,175 @@ exports.getRejectedUsers = async (req, res) => {
       .lean();
     return res.json({ success: true, data: users, count: users.length });
   } catch (err) {
+    return res.status(500).json({ success: false, message: "Server error." });
+  }
+};
+
+exports.searchUsers = async (req, res) => {
+  try {
+    const q = String(req.query.q || "").trim();
+    if (!q) {
+      return res.json({ success: true, data: [], count: 0 });
+    }
+    const term = escapeRegExp(q);
+    const profMatch = await StaffProfile.find({ staff_id: { $regex: term, $options: "i" } }).select("user_id").lean();
+    const profIds = profMatch.map((p) => p.user_id);
+    const or = [
+      { name: { $regex: term, $options: "i" } },
+      { email: { $regex: term, $options: "i" } },
+      { phone: { $regex: term, $options: "i" } },
+      { idNumber: { $regex: term, $options: "i" } },
+    ];
+    if (profIds.length) or.push({ _id: { $in: profIds } });
+
+    const users = await User.find({ deleted_at: null, $or: or })
+      .select(
+        "name email phone idNumber role status is_active employment_type branch_id verification_status verification_rejection_reason isVerified profileCompleted kraPin nssf nhif bank"
+      )
+      .populate("branch_id", "name")
+      .sort({ createdAt: -1 })
+      .limit(50)
+      .lean();
+
+    const profileUserIds = users.filter((u) => ["staff", "supervisor"].includes(u.role)).map((u) => u._id);
+    if (profileUserIds.length) {
+      const profs = await StaffProfile.find({ user_id: { $in: profileUserIds } })
+        .select("user_id type staff_id join_date phone")
+        .lean();
+      const map = Object.fromEntries(profs.map((p) => [p.user_id.toString(), p]));
+      for (const u of users) {
+        if (["staff", "supervisor"].includes(u.role)) u.staff_profile = map[u._id.toString()] || null;
+      }
+    }
+
+    return res.json({ success: true, data: users, count: users.length });
+  } catch (err) {
+    console.error("[searchUsers]", err);
+    return res.status(500).json({ success: false, message: "Server error." });
+  }
+};
+
+exports.reviewRejectedUser = async (req, res) => {
+  try {
+    const user = await User.findOne({ _id: req.params.id, deleted_at: null });
+    if (!user) return res.status(404).json({ success: false, message: "User not found." });
+    if (user.status !== "rejected") {
+      return res.status(400).json({ success: false, message: "Only rejected accounts can be sent back for review." });
+    }
+
+    const before = {
+      status: user.status,
+      rejection_reason: user.rejection_reason,
+      rejected_at: user.rejected_at,
+      verification_status: user.verification_status,
+    };
+    user.status = "pending";
+    user.rejection_reason = null;
+    user.rejected_at = null;
+    user.verification_status = "pending";
+    user.verification_rejection_reason = null;
+    user.isVerified = false;
+    user.is_active = false;
+    await user.save();
+
+    await Notification.create({
+      user_id: user._id,
+      type: "info",
+      message: "Your account was returned to the pending queue for admin review.",
+    });
+    await notifyAdmins({
+      type: "approval",
+      message: `${user.name} (${user.email}) was moved from rejected back to pending for re-review.`,
+    });
+    await writeAudit("USER_RE_REVIEW", req, user._id, "users", before, {
+      status: "pending",
+      verification_status: "pending",
+    });
+
+    return res.json({
+      success: true,
+      message: "User moved back to pending for approval.",
+      data: { id: user._id, status: user.status, verification_status: user.verification_status },
+    });
+  } catch (err) {
+    console.error("[reviewRejectedUser]", err);
+    return res.status(500).json({ success: false, message: "Server error." });
+  }
+};
+
+exports.promoteUser = async (req, res) => {
+  try {
+    const user = await User.findOne({ _id: req.params.id, deleted_at: null });
+    if (!user) return res.status(404).json({ success: false, message: "User not found." });
+    if (user.status !== "approved") {
+      return res.status(400).json({ success: false, message: "Only approved users can be promoted via this endpoint." });
+    }
+    if (!["staff", "supervisor"].includes(user.role)) {
+      return res.status(400).json({ success: false, message: "Promotion applies to staff or branch supervisors only." });
+    }
+
+    const branch_id = req.body.branch_id;
+    const profile = await StaffProfile.findOne({ user_id: user._id });
+
+    if (user.role === "staff" && profile && profile.type === "contract") {
+      const br = branch_id || user.branch_id;
+      const r = await promotionService.promoteRole({
+        user_id: user._id.toString(),
+        new_role: "supervisor",
+        branch_id: br,
+      });
+      if (!r.ok) return res.status(r.code).json({ success: false, message: r.message });
+      profile.type = "supervisor";
+      await profile.save();
+      r.user.employment_type = "supervisor";
+      await r.user.save();
+      await writeAudit("PROMOTE_USER_NEXT", req, user._id, "users", { role: "staff", employment: "contract" }, { role: "supervisor", employment: "supervisor" });
+      await Notification.create({
+        user_id: user._id,
+        type: "info",
+        message: "You have been promoted to branch supervisor.",
+      });
+      return res.json({
+        success: true,
+        message: "Promoted to branch supervisor.",
+        data: { role: r.user.role, employment_type: r.user.employment_type, branch_id: r.user.branch_id },
+      });
+    }
+
+    if (!profile) {
+      return res.status(400).json({ success: false, message: "Staff profile is required before employment promotion." });
+    }
+    if (profile.type === "supervisor" || user.role === "supervisor") {
+      return res.status(400).json({ success: false, message: "Already at supervisor level for role or employment." });
+    }
+
+    const nextMap = { casual: "reliever", reliever: "contract" };
+    const next = nextMap[profile.type];
+    if (!next) {
+      return res.status(400).json({ success: false, message: "No further employment promotion from current type." });
+    }
+
+    const r = await promotionService.promoteEmployment({
+      staff_id: user._id.toString(),
+      new_type: next,
+      branch_id: branch_id || user.branch_id,
+    });
+    if (!r.ok) return res.status(r.code).json({ success: false, message: r.message });
+
+    await writeAudit("PROMOTE_USER_NEXT", req, user._id, "users", { employment_type: r.old_value }, { employment_type: r.new_value });
+    await Notification.create({
+      user_id: user._id,
+      type: "info",
+      message: `Your employment type was updated to ${next}.`,
+    });
+
+    return res.json({
+      success: true,
+      message: "Employment type promoted.",
+      data: { employment_type: r.user.employment_type, staff_profile_type: r.profile.type, branch_id: r.user.branch_id },
+    });
+  } catch (err) {
+    console.error("[promoteUser]", err);
     return res.status(500).json({ success: false, message: "Server error." });
   }
 };
@@ -919,39 +1093,96 @@ exports.rejectForcedClockOutRequest = async (req, res) => {
   }
 };
 
-exports.exportUsersXlsx = async (req, res) => {
-  try {
-    const XLSX = require("xlsx");
-    const users = await User.find({})
-      .populate("branch_id", "name")
-      .sort({ createdAt: -1 })
-      .lean();
+function csvEscapeCell(v) {
+  const s = v == null ? "" : String(v);
+  if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
 
-    const rows = users.map((u) => ({
-      "Staff ID": u.staffId || "",
+async function buildUserExportRows(qRaw) {
+  const q = String(qRaw || "").trim();
+  const base = { deleted_at: null };
+  let query = base;
+  if (q) {
+    const term = escapeRegExp(q);
+    const profMatch = await StaffProfile.find({ staff_id: { $regex: term, $options: "i" } }).select("user_id").lean();
+    const profIds = profMatch.map((p) => p.user_id);
+    const or = [
+      { name: { $regex: term, $options: "i" } },
+      { email: { $regex: term, $options: "i" } },
+      { phone: { $regex: term, $options: "i" } },
+      { idNumber: { $regex: term, $options: "i" } },
+    ];
+    if (profIds.length) or.push({ _id: { $in: profIds } });
+    query = { ...base, $or: or };
+  }
+
+  const users = await User.find(query).populate("branch_id", "name").sort({ createdAt: -1 }).lean();
+  const profileUserIds = users.filter((u) => ["staff", "supervisor"].includes(u.role)).map((u) => u._id);
+  const profByUser = {};
+  if (profileUserIds.length) {
+    const profs = await StaffProfile.find({ user_id: { $in: profileUserIds } })
+      .select("user_id type staff_id join_date phone address")
+      .lean();
+    for (const p of profs) profByUser[p.user_id.toString()] = p;
+  }
+
+  return users.map((u) => {
+    const sp = profByUser[u._id.toString()];
+    const ver = resolveVerificationStatus(u).status;
+    return {
+      "Staff ID": sp?.staff_id || u.staffId || "",
       "Full Name": u.name || "",
       Email: u.email || "",
-      Phone: u.phone || "",
+      Phone: u.phone || sp?.phone || "",
       "ID Number": u.idNumber || "",
       "KRA PIN": u.kraPin || "",
       NSSF: u.nssf || "",
       NHIF: u.nhif || "",
       "Bank Name": u.bank?.bankName || "",
       "Account Number": u.bank?.accountNumber || "",
-      Branch: u.bank?.branch || "",
+      "Bank Branch": u.bank?.branch || "",
       "Bank Verified": u.bank?.isVerified ? "Yes" : "No",
-      Status: u.status || "",
+      "Bank Active": u.bank?.isActive ? "Yes" : "No",
+      "Account Status": u.status || "",
+      "Active User": u.is_active ? "Yes" : "No",
       Role: u.role || "",
+      "Employment Type": u.employment_type || sp?.type || "",
       "System Branch": u.branch_id?.name || "",
-    }));
+      "Profile Address": sp?.address || "",
+      "Verification Status": ver,
+      "Verification Note": u.verification_rejection_reason || "",
+      "Join Date": sp?.join_date ? String(sp.join_date).slice(0, 10) : "",
+    };
+  });
+}
 
-    const ws = XLSX.utils.json_to_sheet(rows);
+exports.exportUsersXlsx = async (req, res) => {
+  try {
+    const format = String(req.query.format || "xlsx").toLowerCase() === "csv" ? "csv" : "xlsx";
+    const rows = await buildUserExportRows(req.query.q);
+
+    const suffix = req.query.q ? "filtered" : "all";
+    if (format === "csv") {
+      const headers = Object.keys(rows[0] || {});
+      const lines = [
+        headers.map(csvEscapeCell).join(","),
+        ...rows.map((row) => headers.map((h) => csvEscapeCell(row[h])).join(",")),
+      ];
+      const body = lines.join("\r\n");
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition", `attachment; filename="users-${suffix}.csv"`);
+      return res.send(body);
+    }
+
+    const XLSX = require("xlsx");
+    const ws = XLSX.utils.json_to_sheet(rows.length ? rows : [{ Message: "No users match this export." }]);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Users");
     const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
 
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-    res.setHeader("Content-Disposition", 'attachment; filename="users.xlsx"');
+    res.setHeader("Content-Disposition", `attachment; filename="users-${suffix}.xlsx"`);
     return res.send(buf);
   } catch (err) {
     console.error("[exportUsersXlsx]", err);
@@ -1001,39 +1232,65 @@ exports.getUserById = async (req, res) => {
           ? { id: user.branch_id }
           : null;
 
+    const verification_status = resolveVerificationStatus(user).status;
+    const flat = {
+      full_name: user.name || null,
+      email: user.email || null,
+      phone: user.phone || profile?.phone || null,
+      role: user.role || null,
+      status: user.status || null,
+      is_active: Boolean(user.is_active),
+      verification_status,
+      verification_rejection_reason: user.verification_rejection_reason || null,
+      rejection_reason: user.rejection_reason || null,
+      id_number: user.idNumber || null,
+      kra_pin: user.kraPin || null,
+      nssf: user.nssf || null,
+      nhif: user.nhif || null,
+      bank_account_number: user.bank?.accountNumber || null,
+      bank_name: user.bank?.bankName || null,
+      bank_branch: user.bank?.branch || null,
+      bank_verified: Boolean(user.bank?.isVerified),
+      created_at: user.createdAt || null,
+      employment_type: user.employment_type || profile?.type || null,
+      profile_staff_type: profile?.type || null,
+      branch,
+      last_branch_change: user.last_branch_change || null,
+      join_date: profile?.join_date || null,
+      address: profile?.address || null,
+      staff_id: profile?.staff_id || user.staffId || null,
+      active_sessions: sessions.length,
+      leave_balance: balance || null,
+      recent_audit: recentAudit,
+      attendance_summary: {
+        period_days: 30,
+        since: sinceStr,
+        days_recorded: attSum.days_recorded,
+        present_like: attSum.present_like,
+      },
+    };
+
     res.json({
       success: true,
       data: {
-        full_name: user.name || null,
-        email: user.email || null,
-        phone: user.phone || profile?.phone || null,
-        role: user.role || null,
-        status: user.status || null,
-        is_active: Boolean(user.is_active),
-        verification_status: resolveVerificationStatus(user).status,
-        id_number: user.idNumber || null,
-        kra_pin: user.kraPin || null,
-        nssf: user.nssf || null,
-        nhif: user.nhif || null,
-        bank_account_number: user.bank?.accountNumber || null,
-        bank_name: user.bank?.bankName || null,
-        bank_branch: user.bank?.branch || null,
-        created_at: user.createdAt || null,
-        employment_type: user.employment_type || profile?.type || null,
-        profile_staff_type: profile?.type || null,
-        branch,
-        last_branch_change: user.last_branch_change || null,
-        join_date: profile?.join_date || null,
-        address: profile?.address || null,
-        staff_id: profile?.staff_id || user.staffId || null,
-        active_sessions: sessions.length,
-        leave_balance: balance || null,
-        recent_audit: recentAudit,
-        attendance_summary: {
-          period_days: 30,
-          since: sinceStr,
-          days_recorded: attSum.days_recorded,
-          present_like: attSum.present_like,
+        ...flat,
+        personal_info: {
+          full_name: flat.full_name,
+          email: flat.email,
+          phone: flat.phone,
+          id_number: flat.id_number,
+          kra_pin: flat.kra_pin,
+          nssf: flat.nssf,
+          nhif: flat.nhif,
+          address: flat.address,
+        },
+        employment_info: {
+          role: flat.role,
+          employment_type: flat.employment_type,
+          staff_id: flat.staff_id,
+          branch: flat.branch,
+          join_date: flat.join_date,
+          last_branch_change: flat.last_branch_change,
         },
       },
     });

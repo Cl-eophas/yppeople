@@ -21,9 +21,30 @@ router.patch(
 );
 
 router.get("/users", guard, admin.getAllUsers);
+router.get(
+  "/users/search",
+  guard,
+  [query("q").trim().isLength({ min: 1, max: 200 })],
+  validate,
+  admin.searchUsers
+);
 router.get("/users/pending", guard, admin.getPendingUsers);
 router.get("/users/approved", guard, admin.getApprovedUsers);
 router.get("/users/rejected", guard, admin.getRejectedUsers);
+router.put(
+  "/users/:id/review",
+  guard,
+  [param("id").isMongoId()],
+  validate,
+  admin.reviewRejectedUser
+);
+router.put(
+  "/users/:id/promote",
+  guard,
+  [param("id").isMongoId(), body("branch_id").optional({ checkFalsy: true }).isMongoId()],
+  validate,
+  admin.promoteUser
+);
 router.get("/users/:id", guard, [param("id").isMongoId()], validate, admin.getUserById);
 router.put(
   "/users/:id/role",
@@ -92,8 +113,22 @@ router.post(
   validate,
   admin.createUserByAdmin
 );
-router.get("/export/users", guard, exportLimiter, admin.exportUsersXlsx);
-router.get("/export-users", guard, exportLimiter, admin.exportUsersXlsx);
+router.get(
+  "/export/users",
+  guard,
+  exportLimiter,
+  [query("q").optional().trim().isLength({ max: 200 }), query("format").optional().isIn(["csv", "xlsx"])],
+  validate,
+  admin.exportUsersXlsx
+);
+router.get(
+  "/export-users",
+  guard,
+  exportLimiter,
+  [query("q").optional().trim().isLength({ max: 200 }), query("format").optional().isIn(["csv", "xlsx"])],
+  validate,
+  admin.exportUsersXlsx
+);
 router.patch(
   "/users/:id/staff-profile",
   guard,

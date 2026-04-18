@@ -7,27 +7,7 @@ const profile = require("../controllers/profileController");
 
 router.get("/", authenticate, staffSupervisorOrGeneral, profile.getProfile);
 
-const profileValidators = [
-  body("fullName").trim().isLength({ min: 2, max: 120 }),
-  body("idNumber").trim().matches(/^[0-9]{7,8}$/),
-  body("kraPin").trim().matches(/^[A-Z][0-9]{9}[A-Z]$/),
-  body("nssf").trim().isLength({ min: 2, max: 40 }),
-  body("nhif").trim().isLength({ min: 2, max: 40 }),
-  body("accountNumber").trim().isLength({ min: 6, max: 40 }),
-  body("bankName").trim().isLength({ min: 2, max: 120 }),
-  body("bankBranch").trim().isLength({ min: 2, max: 120 }),
-  body("email").isEmail().normalizeEmail(),
-  body("phone").trim().matches(/^(\+254|0)[0-9]{9}$/),
-];
-
-router.put(
-  "/profile",
-  authenticate,
-  staffSupervisorOrGeneral,
-  profileValidators,
-  validate,
-  profile.updateProfile
-);
+router.put("/profile", authenticate, staffSupervisorOrGeneral, profile.updateProfile);
 
 router.patch(
   "/update",
@@ -36,6 +16,7 @@ router.patch(
   [
     body("phone").trim().matches(/^(\+254|0)[0-9]{9}$/),
     body("address").optional().isString().trim().isLength({ max: 240 }),
+    body("email").optional().isEmail().normalizeEmail(),
   ],
   validate,
   profile.updateContact

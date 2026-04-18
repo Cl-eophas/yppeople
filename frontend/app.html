@@ -607,6 +607,28 @@ nav{flex:1;padding:6px 0;}
      MODALS (shared)
 ════════════════════════════════════════════════ -->
 <!-- Delete user -->
+<div id="m-pick-branch" class="overlay" style="display:none;">
+  <div class="modal">
+    <div class="modal-title">Select branch</div>
+    <div class="modal-sub" id="m-pick-branch-sub">Required for this promotion step.</div>
+    <div class="form-group"><label class="form-label">Branch</label><select class="form-select" id="m-pick-branch-sel"></select></div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-ghost" onclick="closeModal('m-pick-branch')">Cancel</button>
+      <button type="button" class="btn btn-primary" onclick="confirmPickBranch()">Continue</button>
+    </div>
+  </div>
+</div>
+
+<div id="m-user-view" class="overlay" style="display:none;">
+  <div class="modal" style="max-width:560px;max-height:90vh;overflow:auto;">
+    <div class="modal-title">User profile</div>
+    <div id="m-user-view-body" style="font-size:13px;line-height:1.5;"></div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-ghost" onclick="closeModal('m-user-view')">Close</button>
+    </div>
+  </div>
+</div>
+
 <div id="m-delete" class="overlay" style="display:none;">
   <div class="modal">
     <div class="modal-title" style="color:var(--danger);">⚠ Permanent Deletion</div>
@@ -1591,11 +1613,34 @@ function staffProfileView() {
       <div class="g2">
         <div class="card"><div class="card-head">Account Info</div><div id="profile-info"><div class="spinner"></div></div></div>
         <div class="card">
-          <div class="card-head">Update Contact</div>
+          <div class="card-head">Update profile</div>
           <div id="profile-msg"></div>
-          <div class="form-group"><label class="form-label">Phone</label><input class="form-input" type="tel" id="p-phone" placeholder="+254 7XX XXX XXX"/></div>
-          <div class="form-group"><label class="form-label">Address</label><input class="form-input" type="text" id="p-addr" placeholder="Your address"/></div>
-          <button class="btn btn-role" onclick="doUpdateProfile()">Save Changes</button>
+          <div id="profile-edit-full" style="display:none;">
+            <p style="font-size:12px;color:var(--muted);margin-bottom:10px;">Complete all fields for first-time HR verification.</p>
+            <div class="form-group"><label class="form-label">Full name</label><input class="form-input" type="text" id="p-fullname"/></div>
+            <div class="form-group"><label class="form-label">ID number (7–8 digits)</label><input class="form-input" type="text" id="p-idnum"/></div>
+            <div class="form-group"><label class="form-label">KRA PIN (e.g. A123456789B)</label><input class="form-input" type="text" id="p-kra"/></div>
+            <div class="g2">
+              <div class="form-group"><label class="form-label">NSSF</label><input class="form-input" type="text" id="p-nssf"/></div>
+              <div class="form-group"><label class="form-label">NHIF</label><input class="form-input" type="text" id="p-nhif"/></div>
+            </div>
+            <div class="form-group"><label class="form-label">Email</label><input class="form-input" type="email" id="p-email-full"/></div>
+            <div class="form-group"><label class="form-label">Phone</label><input class="form-input" type="tel" id="p-phone-full" placeholder="+254 7XX XXX XXX"/></div>
+            <div class="form-group"><label class="form-label">Bank name</label><input class="form-input" type="text" id="p-bankname"/></div>
+            <div class="form-group"><label class="form-label">Bank branch</label><input class="form-input" type="text" id="p-bankbranch"/></div>
+            <div class="form-group"><label class="form-label">Account number</label><input class="form-input" type="text" id="p-bankacct"/></div>
+            <button type="button" class="btn btn-role" onclick="doSubmitFullProfile()">Submit full profile</button>
+          </div>
+          <div id="profile-edit-partial">
+            <p style="font-size:12px;color:var(--muted);margin-bottom:10px;">ID number, KRA PIN, NSSF, and NHIF are locked after your profile is complete. Updates to phone, email, or bank reset admin verification.</p>
+            <div class="form-group"><label class="form-label">Email</label><input class="form-input" type="email" id="p-email"/></div>
+            <div class="form-group"><label class="form-label">Phone</label><input class="form-input" type="tel" id="p-phone" placeholder="+254 7XX XXX XXX"/></div>
+            <div class="form-group"><label class="form-label">Address</label><input class="form-input" type="text" id="p-addr" placeholder="Your address"/></div>
+            <div class="form-group"><label class="form-label">Bank name</label><input class="form-input" type="text" id="p-bank-name"/></div>
+            <div class="form-group"><label class="form-label">Bank branch</label><input class="form-input" type="text" id="p-bank-br"/></div>
+            <div class="form-group"><label class="form-label">Account number</label><input class="form-input" type="text" id="p-bank-acct"/></div>
+            <button type="button" class="btn btn-role" onclick="doUpdateProfile()">Save changes</button>
+          </div>
           <p style="font-size:11px;color:var(--muted);margin-top:10px;">Role, pay rate, and branch can only be changed by admin.</p>
           <button type="button" class="signout" style="margin:14px 0 0;width:100%;" onclick="doLogout()">Log out</button>
         </div>
@@ -1606,7 +1651,31 @@ function staffProfileView() {
 async function loadProfile() {
   try {
     const res=await api('GET','/profile'); const d=res.data;
-    $('p-phone').value=d.phone||''; $('p-addr').value=d.address||'';
+    const full=$('profile-edit-full');
+    const part=$('profile-edit-partial');
+    if(d.profileCompleted){
+      if(full) full.style.display='none';
+      if(part) part.style.display='block';
+      $('p-phone').value=d.phone||'';
+      $('p-addr').value=d.address||'';
+      $('p-email').value=d.email||'';
+      $('p-bank-name').value=d.bank?.bankName||'';
+      $('p-bank-br').value=d.bank?.branch||'';
+      $('p-bank-acct').value=d.bank?.accountNumber||'';
+    }else{
+      if(full) full.style.display='block';
+      if(part) part.style.display='none';
+      $('p-fullname').value=d.name||'';
+      $('p-idnum').value=d.idNumber||'';
+      $('p-kra').value=d.kraPin||'';
+      $('p-nssf').value=d.nssf||'';
+      $('p-nhif').value=d.nhif||'';
+      $('p-email-full').value=d.email||'';
+      $('p-phone-full').value=d.phone||'';
+      $('p-bankname').value=d.bank?.bankName||'';
+      $('p-bankbranch').value=d.bank?.branch||'';
+      $('p-bankacct').value=d.bank?.accountNumber||'';
+    }
     let banner = '';
     if (d.role && d.role !== 'admin') {
       const vs = d.verification_status || (d.profile_verified || d.isVerified ? 'verified' : d.profile_completed ? 'pending' : 'not_submitted');
@@ -1628,7 +1697,21 @@ async function loadProfile() {
         }
       } catch (e) {}
     }
-    const rows=[['Name',d.name],['Staff ID',d.staff_id],['Email',d.email],['Role',d.role],['Type',d.type],['Branch',d.branch_id?.name||'—'],['Join Date',fd(d.join_date)]];
+    const rows=[
+      ['Name',d.name],
+      ['Staff ID',d.staff_id],
+      ['Email',d.email],
+      ['Phone',d.phone||'—'],
+      ['Role',d.role],
+      ['Type',d.type],
+      ['Branch',d.branch_id?.name||'—'],
+      ['Join Date',fd(d.join_date)],
+      ['ID number',d.idNumber||'—'],
+      ['KRA PIN',d.kraPin||'—'],
+      ['NSSF',d.nssf||'—'],
+      ['NHIF',d.nhif||'—'],
+      ['Bank',d.bank?.bankName?`${d.bank.bankName} (${d.bank.branch||''}) ${d.bank.accountNumber||''}`:'—'],
+    ];
     $('profile-info').innerHTML=banner+rows.map(([k,v])=>`
       <div style="display:flex;justify-content:space-between;border-bottom:1px solid var(--border);padding:9px 0;">
         <span style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px;">${k}</span>
@@ -1638,8 +1721,34 @@ async function loadProfile() {
 }
 async function doUpdateProfile() {
   try {
-    const res=await api('PATCH','/profile/update',{phone:$('p-phone').value.trim(),address:$('p-addr').value.trim()});
+    const res=await api('PUT','/profile/profile',{
+      email:$('p-email').value.trim(),
+      phone:$('p-phone').value.trim(),
+      accountNumber:$('p-bank-acct').value.trim(),
+      bankName:$('p-bank-name').value.trim(),
+      bankBranch:$('p-bank-br').value.trim(),
+    });
+    await api('PATCH','/profile/update',{phone:$('p-phone').value.trim(),address:$('p-addr').value.trim()});
     flash('profile-msg',res.message,'success');
+    loadProfile();
+  } catch(e){flash('profile-msg',e.message);}
+}
+async function doSubmitFullProfile() {
+  try {
+    const res=await api('PUT','/profile/profile',{
+      fullName:$('p-fullname').value.trim(),
+      idNumber:$('p-idnum').value.trim(),
+      kraPin:$('p-kra').value.trim().toUpperCase(),
+      nssf:$('p-nssf').value.trim(),
+      nhif:$('p-nhif').value.trim(),
+      email:$('p-email-full').value.trim(),
+      phone:$('p-phone-full').value.trim(),
+      accountNumber:$('p-bankacct').value.trim(),
+      bankName:$('p-bankname').value.trim(),
+      bankBranch:$('p-bankbranch').value.trim(),
+    });
+    flash('profile-msg',res.message,'success');
+    loadProfile();
   } catch(e){flash('profile-msg',e.message);}
 }
 
@@ -3008,14 +3117,25 @@ async function loadSessions(){
 }
 async function revokeSession(uid){if(!confirm('Revoke all sessions?'))return;await api('DELETE',`/admin/sessions/${uid}`);loadSessions();}
 
-let ADMIN_USER_TAB='pending';
+let ADMIN_USER_TAB='directory';
+let _adminUserSearchTimer=null;
 function adminUsersView(){return `<div id="view-a-users" class="view">
-  <div class="page-head"><div><div class="page-title">Admin Approval Queue</div><div class="page-sub">Strict onboarding gatekeeper: pending, approved, and rejected accounts</div></div></div>
+  <div class="page-head"><div><div class="page-title">Users &amp; approvals</div><div class="page-sub">Search the workforce, manage approvals, promotions, and access</div></div></div>
   <div class="page-body">
-    <div class="card" style="margin-bottom:14px;display:flex;gap:8px;flex-wrap:wrap;">
-      <button id="tab-users-pending" class="btn btn-primary btn-sm" onclick="setAdminUserTab('pending')">Pending</button>
+    <div class="card" style="margin-bottom:14px;">
+      <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:12px;">
+        <input class="form-input" type="search" id="admin-user-search" placeholder="Search name, email, phone, ID, staff ID…" style="flex:1;min-width:220px;" oninput="debounceAdminUserSearch()"/>
+        <button type="button" class="btn btn-ghost btn-sm" onclick="downloadUsersExport('xlsx',false)">Excel · all</button>
+        <button type="button" class="btn btn-ghost btn-sm" onclick="downloadUsersExport('csv',false)">CSV · all</button>
+        <button type="button" class="btn btn-primary btn-sm" onclick="downloadUsersExport('xlsx',true)">Excel · filtered</button>
+        <button type="button" class="btn btn-primary btn-sm" onclick="downloadUsersExport('csv',true)">CSV · filtered</button>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      <button id="tab-users-directory" class="btn btn-primary btn-sm" onclick="setAdminUserTab('directory')">Directory</button>
+      <button id="tab-users-pending" class="btn btn-ghost btn-sm" onclick="setAdminUserTab('pending')">Pending</button>
       <button id="tab-users-approved" class="btn btn-ghost btn-sm" onclick="setAdminUserTab('approved')">Approved</button>
       <button id="tab-users-rejected" class="btn btn-ghost btn-sm" onclick="setAdminUserTab('rejected')">Rejected</button>
+      </div>
     </div>
     <div class="card"><div id="users-content"><div class="spinner"></div></div></div>
   </div>
@@ -3023,16 +3143,208 @@ function adminUsersView(){return `<div id="view-a-users" class="view">
 
 function setAdminUserTab(tab){
   ADMIN_USER_TAB=tab;
-  ['pending','approved','rejected'].forEach(t=>{
+  ['directory','pending','approved','rejected'].forEach(t=>{
     const el=$(`tab-users-${t}`);
     if(!el) return;
     el.className = t===tab ? 'btn btn-primary btn-sm' : 'btn btn-ghost btn-sm';
   });
   loadUsers();
 }
+function debounceAdminUserSearch(){
+  clearTimeout(_adminUserSearchTimer);
+  _adminUserSearchTimer=setTimeout(()=>{if(ADMIN_USER_TAB==='directory')loadUsers();},320);
+}
+async function downloadUsersExport(fmt, filtered){
+  try{
+    const q=(filtered && $('admin-user-search')) ? String($('admin-user-search').value||'').trim() : '';
+    const qs=new URLSearchParams({format:fmt});
+    if(q) qs.set('q',q);
+    const url=`${API}/admin/export/users?${qs.toString()}`;
+    const r=await fetch(url,{headers:{Authorization:'Bearer '+TOKEN},credentials:'include'});
+    if(!r.ok){ const t=await r.text(); throw new Error(t||r.statusText); }
+    const blob=await r.blob();
+    const cd=r.headers.get('Content-Disposition')||'';
+    const fnMatch=/filename="?([^";]+)"?/i.exec(cd);
+    const ext=fmt==='csv'?'csv':'xlsx';
+    const fn=fnMatch?fnMatch[1]:`users-export.${ext}`;
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download=fn;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }catch(e){alert(e.message||String(e));}
+}
+let _pickBranchCb=null;
+async function ensureAdminBranches(){
+  if(!BRANCHES||!BRANCHES.length){
+    try{const br=await api('GET','/admin/branches');BRANCHES=br.data||[];}catch(_){BRANCHES=[];}
+  }
+}
+function pickBranchInteractive(sub){
+  return new Promise((resolve)=>{
+    ensureAdminBranches().then(()=>{
+      $('m-pick-branch-sub').textContent=sub||'Select a branch.';
+      const sel=$('m-pick-branch-sel');
+      sel.innerHTML=(BRANCHES||[]).map(b=>`<option value="${b._id}">${escHtml(b.name)}</option>`).join('');
+      _pickBranchCb=resolve;
+      openModal('m-pick-branch');
+    });
+  });
+}
+function confirmPickBranch(){
+  const v=$('m-pick-branch-sel')&&$('m-pick-branch-sel').value;
+  closeModal('m-pick-branch');
+  const cb=_pickBranchCb;
+  _pickBranchCb=null;
+  if(cb) cb(v||null);
+}
+async function adminViewUserModal(id){
+  try{
+    const r=await api('GET',`/admin/users/${id}`);
+    const d=r.data;
+    const b=d.bank_name?`${escHtml(d.bank_name)} · ${escHtml(d.bank_branch||'')} · ${escHtml(d.bank_account_number||'')}`:'—';
+    $('m-user-view-body').innerHTML=`
+      <p><strong>Account</strong> ${escHtml(d.status||'')} · ${d.is_active?'Active':'Inactive'} · ${escHtml(d.role||'—')}</p>
+      <p><strong>Employment</strong> ${escHtml(d.employment_type||d.profile_staff_type||'—')} · Branch: ${escHtml(d.branch?.name||'—')}</p>
+      <p><strong>Verification</strong> ${escHtml(d.verification_status||'—')} ${d.verification_rejection_reason?` — ${escHtml(d.verification_rejection_reason)}`:''}</p>
+      <p><strong>ID</strong> ${escHtml(d.id_number||'—')} · <strong>KRA</strong> ${escHtml(d.kra_pin||'—')}</p>
+      <p><strong>NHIF / NSSF</strong> ${escHtml(d.nhif||'—')} · ${escHtml(d.nssf||'—')}</p>
+      <p><strong>Bank</strong> ${b}</p>
+      <p><strong>Attendance (30d)</strong> ${d.attendance_summary?.present_like??0} present-like / ${d.attendance_summary?.days_recorded??0} days recorded</p>`;
+    openModal('m-user-view');
+  }catch(e){alert(e.message);}
+}
+async function adminToggleActive(id,isActive){
+  const act=isActive===true||isActive==='true'||isActive===1;
+  if(act){ if(!confirm('Deactivate this user?'))return; try{await api('PATCH',`/admin/users/${id}/deactivate`);loadUsers();}catch(e){alert(e.message);} }
+  else { if(!confirm('Activate this user?'))return; try{await api('PUT',`/admin/users/${id}/activate`);loadUsers();}catch(e){alert(e.message);} }
+}
+async function adminReReviewRejected(id){
+  if(!confirm('Return this user to the pending approval queue?'))return;
+  try{await api('PUT',`/admin/users/${id}/review`);loadUsers();}catch(e){alert(e.message);}
+}
+async function verifyApprovedProfile(id){
+  if(!confirm('Mark this user profile as verified?'))return;
+  try{await api('PUT',`/admin/users/${id}/verify`);loadUsers();}catch(e){alert(e.message);}
+}
+async function rejectApprovedProfile(id){
+  const reason=prompt('Reason for rejecting profile verification:');
+  if(!reason||!String(reason).trim())return;
+  try{await api('PUT',`/admin/users/${id}/reject-profile`,{reason:String(reason).trim()});loadUsers();}catch(e){alert(e.message);}
+}
+async function adminPromoteNext(id){
+  try{
+    const r=await api('GET',`/admin/users/${id}`);
+    const d=r.data;
+    const emp=String(d.employment_type||d.profile_staff_type||'');
+    let branch_id=d.branch&&d.branch.id?String(d.branch.id):'';
+    if(emp==='casual' && !branch_id){
+      branch_id=await pickBranchInteractive('Casual → reliever requires a fixed branch.');
+      if(!branch_id)return;
+    }
+    if(emp==='contract' && d.role==='staff' && !branch_id){
+      branch_id=await pickBranchInteractive('Contract → supervisor requires a branch.');
+      if(!branch_id)return;
+    }
+    if(!confirm('Promote this user one step on the employment ladder?'))return;
+    const body=branch_id?{branch_id}:{};
+    await api('PUT',`/admin/users/${id}/promote`,body);
+    loadUsers();
+  }catch(e){alert(e.message);}
+}
+function adminPromoteLabel(u){
+  const role=u.role||'';
+  const emp=String(u.employment_type||u.staff_profile?.type||'');
+  if(role==='staff' && emp==='contract') return 'Promote → supervisor';
+  if(role==='staff' && emp==='reliever') return 'Promote → contract';
+  if(role==='staff' && emp==='casual') return 'Promote → reliever';
+  if(role==='supervisor') return '—';
+  return emp?'Promote':'—';
+}
+function adminDirectoryActions(u){
+  const id=u._id;
+  const bits=[];
+  bits.push(`<button type="button" class="btn btn-ghost btn-sm" onclick="adminViewUserModal('${id}')">View</button>`);
+  if(u.status==='approved' && ['staff','supervisor'].includes(u.role)){
+    const lbl=adminPromoteLabel(u);
+    if(lbl!=='—') bits.push(`<button type="button" class="btn btn-primary btn-sm" onclick="adminPromoteNext('${id}')">${lbl}</button>`);
+    if(u.role==='supervisor') bits.push(`<button type="button" class="btn btn-warning btn-sm" onclick="runDemoteSupervisor('${id}','')">Demote</button>`);
+    bits.push(`<button type="button" class="btn btn-ghost btn-sm" onclick="adminToggleActive('${id}',${u.is_active?'true':'false'})">${u.is_active?'Deactivate':'Activate'}</button>`);
+    bits.push(`<button type="button" class="btn btn-danger btn-sm" onclick="openDelete('${id}')">Delete</button>`);
+  }
+  if(u.status==='rejected') bits.push(`<button type="button" class="btn btn-role btn-sm" onclick="adminReReviewRejected('${id}')">Re-review</button>`);
+  return `<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;">${bits.join('')}</div>`;
+}
+async function toggleAdminUserExpand(ev,id){
+  if(ev) ev.stopPropagation();
+  const row=$(`admin-user-exp-${id}`);
+  if(!row) return;
+  if(row.style.display==='table-row'){ row.style.display='none'; return; }
+  row.style.display='table-row';
+  const cell=row.querySelector('td');
+  if(!cell||cell.dataset.loaded==='1') return;
+  cell.innerHTML='<div class="spinner"></div>';
+  try{
+    const r=await api('GET',`/admin/users/${id}`);
+    const d=r.data;
+    cell.dataset.loaded='1';
+    cell.innerHTML=`<div style="padding:14px;background:var(--panel);border-radius:8px;border:1px solid var(--border);">
+      <div style="font-weight:700;margin-bottom:8px;">Full profile</div>
+      <div style="display:grid;gap:6px;font-size:12px;">
+        <div><span style="color:var(--muted);">ID</span> ${escHtml(d.id_number||'—')}</div>
+        <div><span style="color:var(--muted);">KRA</span> ${escHtml(d.kra_pin||'—')}</div>
+        <div><span style="color:var(--muted);">NHIF / NSSF</span> ${escHtml(d.nhif||'—')} · ${escHtml(d.nssf||'—')}</div>
+        <div><span style="color:var(--muted);">Bank</span> ${escHtml(d.bank_name||'—')} (${escHtml(d.bank_branch||'—')}) ${escHtml(d.bank_account_number||'')}</div>
+        <div><span style="color:var(--muted);">Verification</span> ${escHtml(d.verification_status||'—')} ${d.verification_rejection_reason?` — ${escHtml(d.verification_rejection_reason)}`:''}</div>
+        <div><span style="color:var(--muted);">Account rejection</span> ${escHtml(d.rejection_reason||'—')}</div>
+      </div></div>`;
+  }catch(e){ cell.innerHTML=`<p style="color:var(--danger);">${escHtml(e.message)}</p>`;}
+}
 
 async function loadUsers(){
   try{
+    if(ADMIN_USER_TAB==='directory'){
+      const qEl=$('admin-user-search');
+      const q=qEl?String(qEl.value||'').trim():'';
+      let users;
+      if(q.length>=1){
+        const res=await api('GET','/admin/users/search?'+new URLSearchParams({q}).toString());
+        users=res.data||[];
+      }else{
+        const res=await api('GET','/admin/users?include_profile=true&limit=500');
+        users=res.data||[];
+      }
+      const vBadge=(u)=>{
+        const vs=u.verification_status||(u.isVerified?'verified':'pending');
+        if(vs==='verified')return'<span class="badge b-approved">✔ Verified</span>';
+        if(vs==='rejected')return'<span class="badge b-rejected">❌ Rejected</span>';
+        if(vs==='pending')return'<span class="badge b-pending">⏳ Pending</span>';
+        return'<span class="badge b-pending">⚠ Not submitted</span>';
+      };
+      const st=(u)=>{
+        if(u.status==='pending') return '<span class="badge b-pending">Pending</span>';
+        if(u.status==='rejected') return '<span class="badge b-rejected">Rejected</span>';
+        return u.is_active?'<span class="badge b-approved">Active</span>':'<span class="badge b-pending">Inactive</span>';
+      };
+      const emp=u=>escHtml(String(u.employment_type||u.staff_profile?.type||'—'));
+      const phone=u=>escHtml(String(u.phone||u.staff_profile?.phone||'—'));
+      const branch=u=>escHtml(u.branch_id?.name||'—');
+      $('users-content').innerHTML=users.length===0?'<p class="empty">No users match.</p>'
+        :`<table class="tbl"><thead><tr><th></th><th>Name</th><th>Phone</th><th>Role</th><th>Branch</th><th>Employment</th><th>Status</th><th>Verification</th><th style="min-width:220px;">Actions</th></tr></thead><tbody>${
+          users.map(u=>`<tr>
+        <td><button type="button" class="btn btn-ghost btn-sm" onclick="toggleAdminUserExpand(event,'${u._id}')" title="Expand">＋</button></td>
+        <td style="font-weight:700;">${escHtml(u.name||'—')}</td>
+        <td style="font-size:12px;">${phone(u)}</td>
+        <td><span class="badge b-${u.role||'staff'}">${escHtml(u.role||'—')}</span></td>
+        <td style="font-size:12px;">${branch(u)}</td>
+        <td style="font-size:12px;">${emp(u)}</td>
+        <td>${st(u)}</td>
+        <td>${vBadge(u)}</td>
+        <td style="white-space:normal;">${adminDirectoryActions(u)}</td>
+      </tr><tr id="admin-user-exp-${u._id}" style="display:none;"><td colspan="9"></td></tr>`).join('')
+        }</tbody></table>`;
+      return;
+    }
     if(ADMIN_USER_TAB==='approved'){
       const res=await api('GET','/admin/users/approved');
       const vBadge=(u)=>{
@@ -3051,7 +3363,7 @@ async function loadUsers(){
           <button type="button" class="btn btn-danger btn-sm" onclick="rejectApprovedProfile('${u._id}')">Reject</button>`;
       };
       $('users-content').innerHTML=res.data.length===0?'<p class="empty">No approved users.</p>'
-      :`<table class="tbl"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Employment</th><th>Verification</th><th>Status</th><th>Approved At</th><th>Actions</th></tr></thead>
+      :`<table class="tbl"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Employment</th><th>Verification</th><th>Status</th><th>Approved At</th><th style="min-width:280px;">Actions</th></tr></thead>
       <tbody>${res.data.map(u=>`<tr>
         <td style="font-weight:700;">${escHtml(u.name||'—')}</td>
         <td style="font-size:12px;color:var(--muted);">${escHtml(u.email||'—')}</td>
@@ -3060,20 +3372,21 @@ async function loadUsers(){
         <td>${vBadge(u)}</td>
         <td><span class="badge b-approved">✔ Approved</span></td>
         <td style="font-size:12px;">${u.approved_at?fdt(u.approved_at):'—'}</td>
-        <td style="white-space:nowrap;">${vActions(u)}</td>
+        <td style="white-space:normal;"><div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px;">${vActions(u)}</div><div style="display:flex;flex-wrap:wrap;gap:6px;">${adminDirectoryActions(u)}</div></td>
       </tr>`).join('')}</tbody></table>`;
       return;
     }
     if(ADMIN_USER_TAB==='rejected'){
       const res=await api('GET','/admin/users/rejected');
       $('users-content').innerHTML=res.data.length===0?'<p class="empty">No rejected users.</p>'
-      :`<table class="tbl"><thead><tr><th>Name</th><th>Email</th><th>Reason</th><th>Status</th><th>Rejected At</th></tr></thead>
+      :`<table class="tbl"><thead><tr><th>Name</th><th>Email</th><th>Reason</th><th>Status</th><th>Rejected At</th><th style="min-width:160px;">Actions</th></tr></thead>
       <tbody>${res.data.map(u=>`<tr>
         <td style="font-weight:700;">${escHtml(u.name||'—')}</td>
         <td style="font-size:12px;color:var(--muted);">${escHtml(u.email||'—')}</td>
         <td style="font-size:12px;">${escHtml(u.rejection_reason||'—')}</td>
         <td><span class="badge b-rejected">❌ Rejected</span></td>
         <td style="font-size:12px;">${u.rejected_at?fdt(u.rejected_at):'—'}</td>
+        <td style="white-space:normal;">${adminDirectoryActions(u)}</td>
       </tr>`).join('')}</tbody></table>`;
       return;
     }
@@ -3267,7 +3580,8 @@ async function submitPromoteSupervisor(){
 }
 
 async function runDemoteSupervisor(id,name){
-  if(!confirm(`Are you sure you want to demote ${name} to staff?`)) return;
+  const label=name&&String(name).trim()?name:'this supervisor';
+  if(!confirm(`Demote ${label} to staff?`)) return;
   try{await api('POST','/admin/demote-role',{user_id:id});loadUsers();}catch(e){alert(e.message);}
 }
 
