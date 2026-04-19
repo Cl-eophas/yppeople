@@ -22,7 +22,22 @@ const attendanceSchema = new mongoose.Schema(
     late_minutes: { type: Number, default: 0 },
     notes: String,
     /** Who initiated the clock event (stored for audit; supervisor-assisted uses is_supervisor_entry). */
-    source: { type: String, enum: ["self", "supervisor"], default: "self" },
+    source: { type: String, enum: ["self", "supervisor", "supervisor_override"], default: "self" },
+    coords: {
+      lat: Number,
+      lng: Number,
+      accuracy: Number,
+    },
+    locationName: String,
+    distance: Number,
+    matchStatus: {
+      type: String,
+      enum: ["matched", "unscheduled", "unallocated"],
+      default: "unallocated",
+    },
+    ipAddress: String,
+    vpnFlagged: { type: Boolean, default: false },
+    deviceMeta: mongoose.Schema.Types.Mixed,
   },
   { timestamps: true }
 );

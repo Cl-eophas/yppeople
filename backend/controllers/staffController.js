@@ -61,7 +61,16 @@ exports.getDashboard = async (req, res) => {
           staff_id: profile?.staff_id,
           type: profile?.type,
           employment_type: user.employment_type || profile?.type || null,
-          branch: user.branch_id ? { id: user.branch_id._id, name: user.branch_id.name } : null,
+          branch: user.branch_id
+            ? {
+                id: user.branch_id._id,
+                name: user.branch_id.name,
+                lat: Number(user.branch_id.branchLocation?.lat ?? user.branch_id.latitude),
+                lng: Number(user.branch_id.branchLocation?.lng ?? user.branch_id.longitude),
+                address: user.branch_id.branchLocation?.address || user.branch_id.address || "",
+                clockInRadius: Number(user.branch_id.clockInRadius || user.branch_id.radius_meters || 1000),
+              }
+            : null,
           needs_branch_selection: user.employment_type === "casual" && !user.branch_id,
         },
         verification: {

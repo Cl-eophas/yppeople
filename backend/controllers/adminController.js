@@ -418,7 +418,8 @@ exports.promoteUser = async (req, res) => {
 
 exports.approveUser = async (req, res) => {
   try {
-    const { role, employment_type: empRaw, branch_id: branchBody } = req.body;
+    const { role, employment_type: empRaw } = req.body;
+    const branchBody = req.body.branch_id || req.body.branchId || null;
     if (!["staff", "supervisor", "general_supervisor"].includes(role)) {
       return res.status(400).json({ success: false, message: "Invalid role." });
     }
@@ -454,18 +455,23 @@ exports.approveUser = async (req, res) => {
         });
       }
       user.branch_id = null;
+      user.branch = null;
       user.last_branch_change = null;
     } else if (requiresFixedBranch(employment_type)) {
       const brCheck = await assertActiveBranch(branchBody);
       if (!brCheck.ok) return res.status(400).json({ success: false, message: brCheck.message });
       user.branch_id = brCheck.branch._id;
+      user.branch = brCheck.branch._id;
+      user.branch = brCheck.branch._id;
     } else {
       if (branchBody) {
         const brCheck = await assertActiveBranch(branchBody);
         if (!brCheck.ok) return res.status(400).json({ success: false, message: brCheck.message });
         user.branch_id = brCheck.branch._id;
+        user.branch = brCheck.branch._id;
       } else {
         user.branch_id = null;
+        user.branch = null;
       }
     }
 
@@ -1384,6 +1390,7 @@ exports.updateEmploymentType = async (req, res) => {
         });
       }
       user.branch_id = brCheck.branch._id;
+      user.branch = brCheck.branch._id;
       user.last_branch_change = new Date();
     }
 
@@ -1410,7 +1417,7 @@ exports.updateEmploymentType = async (req, res) => {
 
 exports.setUserBranch = async (req, res) => {
   try {
-    const { branch_id } = req.body;
+    const branch_id = req.body.branch_id || req.body.branchId;
     const user = await User.findOne({ _id: req.params.id, deleted_at: null });
     if (!user) return res.status(404).json({ success: false, message: "User not found." });
     if (!["staff", "supervisor", "general_supervisor"].includes(user.role)) {
@@ -1423,6 +1430,7 @@ exports.setUserBranch = async (req, res) => {
     if (requiresFixedBranch(user.employment_type) || user.role === "supervisor") {
       const before = { branch_id: user.branch_id };
       user.branch_id = brCheck.branch._id;
+      user.branch = brCheck.branch._id;
       await user.save();
       await writeAudit("USER_BRANCH_SET", req, user._id, "users", before, { branch_id: user.branch_id });
       return res.json({ success: true, message: "Branch updated.", data: { id: user._id, branch_id: user.branch_id } });
@@ -1431,6 +1439,7 @@ exports.setUserBranch = async (req, res) => {
     if (user.role === "general_supervisor" || user.employment_type === "general_supervisor") {
       const before = { branch_id: user.branch_id };
       user.branch_id = brCheck.branch._id;
+      user.branch = brCheck.branch._id;
       await user.save();
       await writeAudit("USER_BRANCH_SET", req, user._id, "users", before, { branch_id: user.branch_id });
       return res.json({ success: true, message: "Branch updated.", data: { id: user._id, branch_id: user.branch_id } });
@@ -1439,6 +1448,7 @@ exports.setUserBranch = async (req, res) => {
     if (user.employment_type === "casual") {
       const before = { branch_id: user.branch_id, last_branch_change: user.last_branch_change };
       user.branch_id = brCheck.branch._id;
+      user.branch = brCheck.branch._id;
       user.last_branch_change = new Date();
       await user.save();
       await writeAudit("ADMIN_CASUAL_BRANCH_SET", req, user._id, "users", before, { branch_id: user.branch_id });
@@ -1476,6 +1486,7 @@ exports.updateUser = async (req, res) => {
       const brCheck = await assertActiveBranch(updates.branch_id);
       if (!brCheck.ok) return res.status(400).json({ success: false, message: brCheck.message });
       updates.branch_id = brCheck.branch._id;
+      updates.branch = brCheck.branch._id;
     }
 
     // Prevent admin from downgrading themselves
@@ -1677,24 +1688,86 @@ exports.setPayRate = async (req, res) => {
 // ─── Branch Management ────────────────────────────────────────────
 exports.getBranches = async (req, res) => {
   try {
-    const branches = await Branch.find().sort({ name: 1 });
-    res.json({ success: true, data: branches });
+    const today = new Date().toISOString().slice(0, 10);
+    const branches = await Branch.find({ is_active: true }).sort({ name: 1 }).lean();
+    const ids = branches.map((b) => b._id);
+    const [staffCounts, activeTodayCounts, presentNowCounts] = await Promise.all([
+      User.aggregate([
+        { $match: { branch_id: { $in: ids }, is_active: true, role: { $in: ["staff", "supervisor"] } } },
+        { $group: { _id: "$branch_id", count: { $sum: 1 } } },
+      ]),
+      Attendance.aggregate([
+        { $match: { branch_id: { $in: ids }, date: today, clock_in: { $ne: null } } },
+        { $group: { _id: "$branch_id", count: { $sum: 1 } } },
+      ]),
+      Attendance.aggregate([
+        { $match: { branch_id: { $in: ids }, date: today, clock_in: { $ne: null }, clock_out: null } },
+        { $group: { _id: "$branch_id", count: { $sum: 1 } } },
+      ]),
+    ]);
+    const mapOf = (rows) => Object.fromEntries(rows.map((r) => [String(r._id), r.count]));
+    const sMap = mapOf(staffCounts);
+    const aMap = mapOf(activeTodayCounts);
+    const pMap = mapOf(presentNowCounts);
+    const out = branches.map((b) => ({
+      ...b,
+      staffCount: sMap[String(b._id)] || 0,
+      activeToday: aMap[String(b._id)] || 0,
+      presentNow: pMap[String(b._id)] || 0,
+    }));
+    res.json({ success: true, data: out });
   } catch (err) {
     res.status(500).json({ success: false, message: "Server error." });
   }
 };
 
+exports.getBranchDashboardStats = async (req, res) => {
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const branches = await Branch.find({ is_active: true }).sort({ name: 1 }).lean();
+    const ids = branches.map((b) => b._id);
+    const [staffCounts, activeTodayCounts, presentNowCounts] = await Promise.all([
+      User.aggregate([
+        { $match: { branch_id: { $in: ids }, is_active: true, role: { $in: ["staff", "supervisor"] } } },
+        { $group: { _id: "$branch_id", count: { $sum: 1 } } },
+      ]),
+      Attendance.aggregate([
+        { $match: { branch_id: { $in: ids }, date: today, clock_in: { $ne: null } } },
+        { $group: { _id: "$branch_id", count: { $sum: 1 } } },
+      ]),
+      Attendance.aggregate([
+        { $match: { branch_id: { $in: ids }, date: today, clock_in: { $ne: null }, clock_out: null } },
+        { $group: { _id: "$branch_id", count: { $sum: 1 } } },
+      ]),
+    ]);
+    const toMap = (rows) => Object.fromEntries(rows.map((r) => [String(r._id), r.count]));
+    const sMap = toMap(staffCounts);
+    const aMap = toMap(activeTodayCounts);
+    const pMap = toMap(presentNowCounts);
+    const list = branches.map((b) => ({
+      branchId: b._id,
+      name: b.name,
+      code: b.code,
+      address: b.branchLocation?.address || b.address,
+      staffCount: sMap[String(b._id)] || 0,
+      activeToday: aMap[String(b._id)] || 0,
+      presentNow: pMap[String(b._id)] || 0,
+    }));
+    return res.json({
+      success: true,
+      totalBranches: branches.length,
+      totalActive: list.reduce((n, x) => n + x.staffCount, 0),
+      branches: list,
+    });
+  } catch (err) {
+    console.error("[getBranchDashboardStats]", err);
+    return res.status(500).json({ success: false, message: "Server error.", code: "ERR_SERVER" });
+  }
+};
+
 exports.createBranch = async (req, res) => {
   try {
-    const {
-      name,
-      address,
-      latitude,
-      longitude,
-      radius_meters,
-      default_shift_start_time,
-      clock_in_window_minutes,
-    } = req.body;
+    const { name, branchLocation, default_shift_start_time, clock_in_window_minutes } = req.body;
 
     const nameTrim = (name || "").trim();
     if (!nameTrim)
@@ -1705,19 +1778,19 @@ exports.createBranch = async (req, res) => {
     if (dup)
       return res.status(400).json({ success: false, message: "A branch with this name already exists." });
 
-    const addr = (address || "").trim();
+    const addr = (branchLocation?.address || "").trim();
     if (!addr || addr.length < 5)
       return res.status(400).json({ success: false, message: "Address is required (at least 5 characters)." });
 
-    if (latitude === undefined || longitude === undefined || isNaN(Number(latitude)) || isNaN(Number(longitude)))
+    const latitude = Number(branchLocation?.lat);
+    const longitude = Number(branchLocation?.lng);
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude))
       return res.status(400).json({ success: false, message: "Valid coordinates required." });
     const lat = Number(latitude);
     const lon = Number(longitude);
     if (lat < -90 || lat > 90 || lon < -180 || lon > 180)
       return res.status(400).json({ success: false, message: "Coordinates out of valid range." });
-    const rad = radius_meters != null ? Number(radius_meters) : 1000;
-    if (Number.isNaN(rad) || rad < 50 || rad > 10000)
-      return res.status(400).json({ success: false, message: "Radius must be 50–10,000 meters (default 1000)." });
+    const rad = 1000;
 
     const dst = default_shift_start_time != null ? String(default_shift_start_time).trim() : "08:00";
     if (!/^\d{1,2}:\d{2}$/.test(dst))
@@ -1731,14 +1804,31 @@ exports.createBranch = async (req, res) => {
     if (Number.isNaN(win) || win < 10 || win > 240)
       return res.status(400).json({ success: false, message: "clock_in_window_minutes must be 10–240 (default 60)." });
 
+    const prefix = nameTrim.slice(0, 3).toUpperCase().padEnd(3, "X");
+    let code = "";
+    for (let i = 1; i <= 10; i++) {
+      const candidate = `${prefix}-${String(i).padStart(3, "0")}`;
+      const exists = await Branch.findOne({ code: candidate }).select("_id").lean();
+      if (!exists) {
+        code = candidate;
+        break;
+      }
+    }
+    if (!code) return res.status(500).json({ success: false, message: "Failed generating branch code." });
+
     const branch = await Branch.create({
       name: nameTrim,
+      code,
+      location: addr,
       address: addr,
       latitude: lat,
       longitude: lon,
       radius_meters: rad,
+      clockInRadius: 1000,
+      branchLocation: { lat, lng: lon, address: addr },
       default_shift_start_time: defaultShift,
       clock_in_window_minutes: Math.round(win),
+      createdBy: req.user._id,
     });
     await writeAudit("CREATE_BRANCH", req, branch._id, "branches", null, {
       name: nameTrim,
@@ -1756,6 +1846,24 @@ exports.createBranch = async (req, res) => {
   }
 };
 
+exports.getBranchById = async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(400).json({ success: false, message: "Invalid branch id.", code: "ERR_INVALID_ID" });
+    }
+    const branch = await Branch.findById(req.params.id).lean();
+    if (!branch) return res.status(404).json({ success: false, message: "Branch not found.", code: "ERR_NOT_FOUND" });
+    const staff = await User.find({ branch_id: branch._id, is_active: true })
+      .select("name email role status is_active branch_id branch")
+      .sort({ name: 1 })
+      .lean();
+    return res.json({ success: true, data: { ...branch, staff } });
+  } catch (err) {
+    console.error("[getBranchById]", err);
+    return res.status(500).json({ success: false, message: "Server error.", code: "ERR_SERVER" });
+  }
+};
+
 exports.updateBranch = async (req, res) => {
   try {
     const {
@@ -1764,6 +1872,7 @@ exports.updateBranch = async (req, res) => {
       radius_meters,
       name,
       address,
+      branchLocation,
       default_shift_start_time,
       clock_in_window_minutes,
     } = req.body;
@@ -1792,13 +1901,36 @@ exports.updateBranch = async (req, res) => {
 
     const branch = await Branch.findById(req.params.id);
     if (!branch) return res.status(404).json({ success: false, message: "Branch not found." });
+    if (name !== undefined) {
+      const nm = String(name).trim();
+      const esc = nm.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const dup = await Branch.findOne({ _id: { $ne: branch._id }, name: new RegExp(`^${esc}$`, "i") }).lean();
+      if (dup) return res.status(400).json({ success: false, message: "A branch with this name already exists." });
+    }
 
     const before = { name: branch.name, latitude: branch.latitude, longitude: branch.longitude, radius_meters: branch.radius_meters };
     if (name !== undefined) branch.name = name;
-    if (address !== undefined) branch.address = address;
+    if (address !== undefined) {
+      branch.address = address;
+      branch.location = address;
+      branch.branchLocation = {
+        lat: branch.latitude,
+        lng: branch.longitude,
+        address,
+      };
+    }
+    if (branchLocation && Number.isFinite(Number(branchLocation.lat)) && Number.isFinite(Number(branchLocation.lng))) {
+      const addr = String(branchLocation.address || branch.address || "").trim();
+      branch.branchLocation = { lat: Number(branchLocation.lat), lng: Number(branchLocation.lng), address: addr };
+      branch.latitude = Number(branchLocation.lat);
+      branch.longitude = Number(branchLocation.lng);
+      branch.address = addr;
+      branch.location = addr;
+    }
     if (latitude !== undefined) branch.latitude = Number(latitude);
     if (longitude !== undefined) branch.longitude = Number(longitude);
     if (radius_meters !== undefined) branch.radius_meters = Number(radius_meters);
+    branch.clockInRadius = 1000;
     if (default_shift_start_time !== undefined) {
       const [hh, mm] = String(default_shift_start_time).trim().split(":").map((x) => parseInt(x, 10));
       branch.default_shift_start_time = `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
@@ -1883,7 +2015,7 @@ exports.transferUsersToBranch = async (req, res) => {
 
     const updates = await User.updateMany(
       { _id: { $in: eligible.map((u) => u._id) } },
-      { $set: { branch_id: toBranch._id } }
+      { $set: { branch_id: toBranch._id, branch: toBranch._id } }
     );
 
     await writeAudit(
@@ -1961,14 +2093,15 @@ exports.deleteBranch = async (req, res) => {
     if (assigned > 0) {
       return res.status(400).json({
         success: false,
-        message: "Reassign or deactivate all users before deleting this branch.",
+        message: `Branch has ${assigned} assigned staff.`,
       });
     }
     const branch = await Branch.findById(req.params.id);
     if (!branch) return res.status(404).json({ success: false, message: "Branch not found." });
-    await Branch.findByIdAndDelete(req.params.id);
+    branch.is_active = false;
+    await branch.save();
     await writeAudit("DELETE_BRANCH", req, req.params.id, "branches", { name: branch.name }, null);
-    res.json({ success: true, message: "Branch deleted." });
+    res.json({ success: true, message: "Branch deactivated." });
   } catch (err) {
     console.error("[deleteBranch]", err);
     res.status(500).json({ success: false, message: "Server error." });

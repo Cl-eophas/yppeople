@@ -741,6 +741,7 @@ const API = '/api';
 let TOKEN = localStorage.getItem('wms_token') || '';
 let ME = null;          // current user object
 let GPS = null;         // {lat, lon}
+let CLOCK_GEO = null;   // {lat,lng,accuracy,locationName,withinRange,distance,effectiveRadius,vpnOk}
 let BRANCHES = [];
 let ADMIN_ATT_MODE = 'daily';
 let ADMIN_ATT_PAGE = 1;
@@ -802,11 +803,87 @@ function closeModal(id) { $(id).style.display='none'; }
 // ── GPS ──────────────────────────────────────────────────────────
 function initGPS(cb) {
   if(!navigator.geolocation) { cb && cb(false); return; }
-  navigator.geolocation.watchPosition(
-    pos => { GPS = {lat: pos.coords.latitude, lon: pos.coords.longitude}; cb && cb(true); cb=null; },
-    ()  => { cb && cb(false); cb=null; },
-    { enableHighAccuracy: true, maximumAge: 30000 }
+  refreshClockGeo().then(()=>{ cb && cb(true); }).catch(()=>{ cb && cb(false); });
+}
+
+function deviceMeta() {
+  return {
+    userAgent: navigator.userAgent || '',
+    platform: navigator.platform || '',
+    hardwareConcurrency: navigator.hardwareConcurrency || null,
+    screen: `${window.screen?.width || 0}x${window.screen?.height || 0}`,
+  };
+}
+
+function updateClockGeoUI() {
+  const name = $('clock-loc-name');
+  const acc = $('clock-loc-acc');
+  const dist = $('clock-distance');
+  const inBtn = $('btn-in');
+  if (name) name.textContent = CLOCK_GEO?.locationName || 'Location unavailable';
+  if (acc) acc.textContent = CLOCK_GEO ? `Accuracy: ±${Math.round(CLOCK_GEO.accuracy)}m` : 'Accuracy: —';
+  if (dist) {
+    if (!CLOCK_GEO || CLOCK_GEO.distance == null) {
+      dist.textContent = 'Distance: —';
+      dist.style.color = 'var(--muted)';
+    } else if (CLOCK_GEO.withinRange) {
+      dist.textContent = `${CLOCK_GEO.distance}m from branch — within range`;
+      dist.style.color = 'var(--success)';
+    } else {
+      dist.textContent = `${CLOCK_GEO.distance}m from branch — too far`;
+      dist.style.color = 'var(--danger)';
+    }
+  }
+  if (inBtn) {
+    const ok = Boolean(CLOCK_GEO && CLOCK_GEO.withinRange && CLOCK_GEO.vpnOk && CLOCK_GEO.accuracy <= 500);
+    inBtn.disabled = !ok;
+    inBtn.textContent = ok ? 'Clock In' : 'Out of range — contact supervisor';
+  }
+}
+
+async function refreshClockGeo() {
+  if(!navigator.geolocation) throw new Error('Geolocation unavailable');
+  const pos = await new Promise((resolve, reject) =>
+    navigator.geolocation.getCurrentPosition(resolve, reject, {
+      enableHighAccuracy: true,
+      timeout: 10000,
+      maximumAge: 0,
+    })
   );
+  GPS = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+  CLOCK_GEO = {
+    lat: pos.coords.latitude,
+    lng: pos.coords.longitude,
+    accuracy: pos.coords.accuracy || 999,
+    locationName: 'Resolving…',
+    withinRange: false,
+    vpnOk: false,
+  };
+  const chip = $('gps-chip');
+  if (chip) {
+    chip.className = 'gps-chip gps-ok';
+    chip.textContent = `✓ GPS ${GPS.lat.toFixed(5)}, ${GPS.lon.toFixed(5)}`;
+  }
+  try {
+    const rev = await api('GET', `/attendance/reverse-geocode?lat=${encodeURIComponent(CLOCK_GEO.lat)}&lon=${encodeURIComponent(CLOCK_GEO.lng)}`);
+    CLOCK_GEO.locationName = rev.data?.locationName || 'Unknown place';
+  } catch(_) {}
+  try {
+    const pre = await api('POST', '/attendance/clock-in-precheck', {
+      latitude: CLOCK_GEO.lat,
+      longitude: CLOCK_GEO.lng,
+      accuracy: CLOCK_GEO.accuracy,
+    });
+    CLOCK_GEO.distance = pre.data?.distance;
+    CLOCK_GEO.effectiveRadius = pre.data?.effectiveRadius;
+    CLOCK_GEO.withinRange = Boolean(pre.data?.withinRange);
+    CLOCK_GEO.vpnOk = Boolean(pre.data?.vpnOk);
+  } catch (e) {
+    CLOCK_GEO.vpnOk = false;
+    const msg = $('clock-msg');
+    if (msg) msg.innerHTML = `<span style="color:var(--danger)">${escHtml(e.message)}</span>`;
+  }
+  updateClockGeoUI();
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -1191,6 +1268,17 @@ function staffDashView() {
       <div class="clock-panel">
         <div class="clock-face" id="live-clock">00:00:00</div>
         <div id="gps-chip" class="gps-chip gps-wait">⏳ Locating GPS…</div>
+        <div class="card" style="padding:10px;margin:8px 0;background:var(--bg-soft);">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+            <div>
+              <div style="font-size:11px;color:var(--muted);text-transform:uppercase;">Your location</div>
+              <div id="clock-loc-name" style="font-size:13px;font-weight:700;">Resolving location…</div>
+              <div id="clock-loc-acc" style="font-size:12px;color:var(--muted);">Accuracy: —</div>
+            </div>
+            <button type="button" class="btn btn-ghost btn-sm" onclick="refreshClockGeo()">refresh</button>
+          </div>
+        </div>
+        <div id="clock-distance" style="font-size:12px;margin-bottom:6px;color:var(--muted);">Distance: —</div>
         <div class="clock-status cs-out" id="clock-status">
           <span class="cs-dot dot-out" id="cs-dot"></span>
           <span id="cs-label">Not Clocked In</span>
@@ -1313,6 +1401,7 @@ async function loadStaffDash() {
       }
     } catch (_) { /* non-fatal */ }
 
+    try { await refreshClockGeo(); } catch (_) {}
   } catch(e) { $('s-stats').innerHTML=`<p style="color:var(--danger);">${e.message}</p>`; }
 }
 
@@ -1341,12 +1430,24 @@ function setClockUI(state) {
 }
 
 async function doClock(dir) {
+  if(!CLOCK_GEO && dir==='in') {
+    try { await refreshClockGeo(); } catch(_) {}
+  }
   if(!GPS) { $('clock-msg').innerHTML='<span style="color:var(--danger)">GPS unavailable — enable location access.</span>'; return; }
   const btn = dir==='in' ? $('btn-in') : $('btn-out');
   btn.disabled=true;
   $('clock-msg').textContent='Processing…';
   try {
-    const res = await api('POST',`/attendance/clock-${dir}`,{latitude:GPS.lat,longitude:GPS.lon});
+    const payload = {
+      latitude: GPS.lat,
+      longitude: GPS.lon,
+    };
+    if (dir === 'in') {
+      payload.accuracy = CLOCK_GEO?.accuracy || 999;
+      payload.locationName = CLOCK_GEO?.locationName || '';
+      payload.deviceMeta = deviceMeta();
+    }
+    const res = await api('POST',`/attendance/clock-${dir}`,payload);
     $('clock-msg').innerHTML=`<span style="color:var(--success)">${res.message}</span>`;
     setClockUI(dir==='in'?'in':'done');
     loadStaffDash();
@@ -4032,7 +4133,7 @@ async function doCreateUser(){
 }
 
 function adminBranchesView(){return `<div id="view-a-branches" class="view">
-  <div class="page-head"><div><div class="page-title">Branch Management</div><div class="page-sub">Search with OpenStreetMap (Nominatim) · pick a pin on the map</div></div></div>
+  <div class="page-head"><div><div class="page-title">Branch Management</div><div class="page-sub">Search, coordinate paste, or map click to set exact GPS anchor (fixed 1000m radius)</div></div></div>
   <div class="page-body"><div class="g2">
     <div class="card">
       <div class="card-head">Create Branch</div>
@@ -4040,19 +4141,19 @@ function adminBranchesView(){return `<div id="view-a-branches" class="view">
       <div class="form-group"><label class="form-label">Branch name</label><input class="form-input" id="br-name" placeholder="Nairobi CBD"/></div>
       <div class="form-group"><label class="form-label">Search location</label>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
-          <input class="form-input" id="br-search" placeholder="City, street, landmark…" style="flex:1;min-width:160px;" onkeydown="if(event.key==='Enter'){event.preventDefault();searchBranchGeo();}"/>
+          <input class="form-input" id="br-search" placeholder="City, street, landmark…" style="flex:1;min-width:160px;" oninput="debounceBranchGeoSearch()"/>
           <button type="button" class="btn btn-primary" onclick="searchBranchGeo()">Search</button>
         </div>
         <div id="br-search-results"></div>
+        <div style="font-size:11px;color:var(--muted);margin-top:6px;">Location data © OpenStreetMap contributors</div>
       </div>
-      <div class="form-group"><label class="form-label">Address (from map / search)</label><input class="form-input" id="br-addr" placeholder="Resolved address"/></div>
+      <div class="form-group"><label class="form-label">Confirmed location</label><input class="form-input" id="br-addr" placeholder="Resolved address" readonly/></div>
       <div id="br-map"></div>
       <p style="font-size:11px;color:var(--muted);margin-top:8px;">Click the map to place or move the pin. Drag the marker to fine-tune.</p>
       <div class="g2">
-        <div class="form-group"><label class="form-label">Latitude</label><input class="form-input" id="br-lat" type="text" readonly placeholder="—"/></div>
-        <div class="form-group"><label class="form-label">Longitude</label><input class="form-input" id="br-lon" type="text" readonly placeholder="—"/></div>
+        <div class="form-group"><label class="form-label">Latitude</label><input class="form-input" id="br-lat" type="text" placeholder="-1.292100" onblur="manualCoordsChanged()"/></div>
+        <div class="form-group"><label class="form-label">Longitude</label><input class="form-input" id="br-lon" type="text" placeholder="36.821900" onblur="manualCoordsChanged()"/></div>
       </div>
-      <div class="form-group"><label class="form-label">Radius (meters)</label><input class="form-input" id="br-radius" type="number" placeholder="1000" value="1000"/></div>
       <div class="g2">
         <div class="form-group"><label class="form-label">Default shift start</label><input class="form-input" id="br-def-start" placeholder="08:00" value="08:00"/></div>
         <div class="form-group"><label class="form-label">Clock-in window (minutes)</label><input class="form-input" id="br-ciwin" type="number" placeholder="60" value="60" min="10" max="240"/></div>
@@ -4080,8 +4181,8 @@ async function loadBranchesForAdmin(){
       :res.data.map(b=>`<div style="padding:12px 0;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;gap:12px;align-items:flex-start;cursor:pointer;" onclick="openBranchMonitor('${b._id}')">
           <div>
             <div style="font-weight:700;">${escHtml(b.name)}</div>
-            <div style="font-size:12px;color:var(--muted);">${escHtml(b.address)}</div>
-            <div style="font-size:12px;color:var(--muted);">📍 ${b.latitude}, ${b.longitude} · ${b.radius_meters}m</div>
+            <div style="font-size:12px;color:var(--muted);">${escHtml(b.branchLocation?.address||b.address||'')}</div>
+            <div style="font-size:12px;color:var(--muted);">📍 ${b.branchLocation?.lat??b.latitude}, ${b.branchLocation?.lng??b.longitude} · ${b.clockInRadius||b.radius_meters||1000}m</div>
             <div style="font-size:12px;color:var(--muted);">🕒 Default shift ${escHtml(b.default_shift_start_time||'08:00')} · clock-in window ${escHtml(String(b.clock_in_window_minutes||60))}m</div>
           </div>
           <button type="button" class="btn btn-danger btn-sm" data-bid="${b._id}" onclick="event.stopPropagation();deleteBranchBtn(this)">Delete</button>
@@ -4092,39 +4193,61 @@ function initBranchMapIfNeeded(){
   const el=$('br-map');
   if(!el||typeof L==='undefined')return;
   if(window._branchLeafletMap){window._branchLeafletMap.invalidateSize();return;}
-  const map=L.map('br-map').setView([-1.2921,36.8219],6);
+  const map=L.map('br-map').setView([-1.2921,36.8219],13);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',maxZoom:19}).addTo(map);
   window._branchLeafletMap=map;
   window._branchMarker=null;
-  map.on('click',(e)=>setBranchPin(e.latlng.lat,e.latlng.lng));
+  window._branchCircle=null;
+  map.on('click',(e)=>setBranchPin(e.latlng.lat,e.latlng.lng,true));
 }
-function setBranchPin(lat,lon){
+function setBranchPin(lat,lon,resolve=true){
   const map=window._branchLeafletMap;
   if(!map)return;
   if(window._branchMarker){map.removeLayer(window._branchMarker);}
   window._branchMarker=L.marker([lat,lon],{draggable:true}).addTo(map);
-  window._branchMarker.on('dragend',()=>{const p=window._branchMarker.getLatLng();$('br-lat').value=p.lat.toFixed(6);$('br-lon').value=p.lng.toFixed(6);});
+  window._branchMarker.on('dragend',()=>{const p=window._branchMarker.getLatLng();setBranchPin(p.lat,p.lng,true);});
+  if(window._branchCircle){map.removeLayer(window._branchCircle);}
+  window._branchCircle=L.circle([lat,lon],{radius:1000,color:'#185FA5',fillColor:'#E6F1FB',fillOpacity:0.25,weight:1.5}).addTo(map);
   $('br-lat').value=lat.toFixed(6);
   $('br-lon').value=lon.toFixed(6);
   map.setView([lat,lon],Math.max(map.getZoom(),14));
+  if(resolve) reverseBranchGeo(lat,lon);
+}
+function debounceBranchGeoSearch(){clearTimeout(window._brSearchT);window._brSearchT=setTimeout(searchBranchGeo,400);}
+async function reverseBranchGeo(lat,lon){
+  try{
+    const r=await api('GET',`/admin/geo/reverse?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}`);
+    $('br-addr').value=(r.data?.display_name||'').slice(0,500);
+  }catch(_){flash('br-msg','Could not resolve location — check coordinates.');}
+}
+async function manualCoordsChanged(){
+  const lat=parseFloat($('br-lat').value),lon=parseFloat($('br-lon').value);
+  if(Number.isNaN(lat)||Number.isNaN(lon)||lat<-90||lat>90||lon<-180||lon>180){
+    flash('br-msg','Could not resolve location — check coordinates.');
+    return;
+  }
+  initBranchMapIfNeeded();
+  setBranchPin(lat,lon,true);
 }
 async function searchBranchGeo(){
   const q=$('br-search').value.trim();
-  if(q.length<2){flash('br-msg','Enter at least 2 characters to search.','error');return;}
+  if(q.length<3){$('br-search-results').innerHTML='';return;}
   try{
     const res=await api('GET','/admin/geo/search?'+new URLSearchParams({q}));
     const box=$('br-search-results');
     if(!res.data.length){box.innerHTML='<p class="empty" style="padding:8px;">No results.</p>';return;}
     window._branchSearchResults=res.data;
-    box.innerHTML=res.data.map((r,i)=>`<button type="button" class="btn btn-ghost" style="display:block;width:100%;text-align:left;font-size:12px;margin-bottom:4px;white-space:normal;" onclick="pickBranchSearchResult(${i})">${escHtml(r.display_name)}</button>`).join('');
+    box.innerHTML=res.data.map((r,i)=>`<button type="button" class="btn btn-ghost" style="display:block;width:100%;text-align:left;font-size:12px;margin-bottom:4px;white-space:normal;" onclick="pickBranchSearchResult(${i})">
+      <div style="font-weight:700;">${escHtml((r.display_name||'').split(',')[0]||'Result')}</div>
+      <div style="font-size:11px;color:var(--muted);">${escHtml(r.display_name||'')}</div>
+    </button>`).join('');
   }catch(e){flash('br-msg',e.message);}
 }
 function pickBranchSearchResult(i){
   const r=window._branchSearchResults&&window._branchSearchResults[i];
   if(!r||Number.isNaN(r.lat)||Number.isNaN(r.lon))return;
-  $('br-addr').value=(r.display_name||'').slice(0,500);
   initBranchMapIfNeeded();
-  setBranchPin(r.lat,r.lon);
+  setBranchPin(r.lat,r.lon,true);
   $('br-search-results').innerHTML='';
 }
 async function doCreateBranch(){
@@ -4135,10 +4258,7 @@ async function doCreateBranch(){
     const ciwin=parseInt($('br-ciwin')?.value,10)||60;
     const res=await api('POST','/admin/branches',{
       name:$('br-name').value.trim(),
-      address:$('br-addr').value.trim(),
-      latitude:lat,
-      longitude:lon,
-      radius_meters:parseInt($('br-radius').value,10)||1000,
+      branchLocation:{lat:Number(lat.toFixed(6)),lng:Number(lon.toFixed(6)),address:$('br-addr').value.trim()},
       default_shift_start_time:dst,
       clock_in_window_minutes:ciwin
     });

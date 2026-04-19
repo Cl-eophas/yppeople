@@ -3,7 +3,7 @@ const { body, param, query } = require("express-validator");
 const router = express.Router();
 const { authenticate, requireRole } = require("../middleware/auth");
 const { validate } = require("../middleware/validate");
-const { destructiveLimiter, geoSearchLimiter, exportLimiter } = require("../middleware/rateLimiter");
+const { destructiveLimiter, geoSearchLimiter, geoReverseLimiter, exportLimiter } = require("../middleware/rateLimiter");
 const admin = require("../controllers/adminController");
 const geo = require("../controllers/geoController");
 const contract = require("../controllers/contractController");
@@ -74,6 +74,7 @@ router.put(
     body("role").isIn(["general_supervisor", "supervisor", "staff"]),
     body("employment_type").optional().isIn(["casual", "reliever", "contract", "supervisor", "general_supervisor"]),
     body("branch_id").optional({ checkFalsy: true }).isMongoId(),
+    body("branchId").optional({ checkFalsy: true }).isMongoId(),
   ],
   validate,
   admin.approveUser
@@ -81,7 +82,7 @@ router.put(
 router.put(
   "/users/:id/branch",
   guard,
-  [param("id").isMongoId(), body("branch_id").isMongoId()],
+  [param("id").isMongoId(), body("branch_id").optional().isMongoId(), body("branchId").optional().isMongoId()],
   validate,
   admin.setUserBranch
 );
@@ -186,18 +187,27 @@ router.patch(
 router.get("/sessions", guard, admin.getActiveSessions);
 router.delete("/sessions/:id", guard, [param("id").isMongoId()], validate, admin.revokeUserSessions);
 
-router.get("/geo/search", guard, geoSearchLimiter, [query("q").trim().isLength({ min: 2, max: 200 })], validate, geo.searchPlaces);
+router.get("/geo/search", guard, geoSearchLimiter, [query("q").trim().isLength({ min: 3, max: 200 })], validate, geo.searchPlaces);
+router.get(
+  "/geo/reverse",
+  guard,
+  geoReverseLimiter,
+  [query("lat").isFloat({ min: -90, max: 90 }), query("lon").isFloat({ min: -180, max: 180 })],
+  validate,
+  geo.reversePlace
+);
 
 router.get("/branches", guard, admin.getBranches);
+router.get("/dashboard/branches", guard, admin.getBranchDashboardStats);
+router.get("/branches/:id", guard, [param("id").isMongoId()], validate, admin.getBranchById);
 router.post(
   "/branches",
   guard,
   [
     body("name").trim().notEmpty().isLength({ max: 120 }),
-    body("address").trim().isLength({ min: 5, max: 500 }),
-    body("latitude").isFloat({ min: -90, max: 90 }),
-    body("longitude").isFloat({ min: -180, max: 180 }),
-    body("radius_meters").optional().isFloat({ min: 50, max: 10000 }),
+    body("branchLocation.lat").isFloat({ min: -90, max: 90 }),
+    body("branchLocation.lng").isFloat({ min: -180, max: 180 }),
+    body("branchLocation.address").trim().isLength({ min: 5, max: 500 }),
     body("default_shift_start_time").optional().matches(/^\d{1,2}:\d{2}$/),
     body("clock_in_window_minutes").optional().isInt({ min: 10, max: 240 }),
   ],

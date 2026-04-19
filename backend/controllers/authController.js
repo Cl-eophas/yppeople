@@ -180,6 +180,7 @@ exports.login = async (req, res) => {
         email: user.email,
         role: user.role,
         branch_id: user.branch_id,
+        branch: user.branch || user.branch_id || null,
         new_device_warning: newDevice && user.role === "admin",
         profile_warning: profileBanner,
         ...verificationPayload(user),
@@ -267,9 +268,9 @@ exports.completeProfile = async (req, res) => {
     if (!user.staffId) user.staffId = await nextYPStaffIdV2();
     const wasApproved = user.status === "approved" && user.is_active;
     if (!wasApproved) {
-      user.status = "pending";
-      user.is_active = false;
-      user.role = null;
+    user.status = "pending";
+    user.is_active = false;
+    user.role = null;
     }
     user.profileCompleted = true;
     user.verification_status = "pending";
@@ -418,6 +419,7 @@ exports.register = async (req, res) => {
       password,
       role: assignedRole,
       branch_id: resolvedBranch,
+      branch: resolvedBranch || null,
       status: "approved",
       is_active: true,
       isVerified: false,

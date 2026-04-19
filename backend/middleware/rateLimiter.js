@@ -42,10 +42,16 @@ const geoSearchLimiter = makeLimit({
   message: "Too many map searches. Wait a moment.",
 });
 
+const geoReverseLimiter = makeLimit({
+  windowMs: 1000,
+  max: 1,
+  message: "Too many reverse-geocode requests. Slow down.",
+});
+
 const exportLimiter = makeLimit({
   windowMs: 15 * 60 * 1000,
   max: 20,
   message: "Too many export requests. Try again later.",
 });
 
-module.exports = { loginLimiter, apiLimiter, destructiveLimiter, geoSearchLimiter, exportLimiter };
+module.exports = { loginLimiter, apiLimiter, destructiveLimiter, geoSearchLimiter, geoReverseLimiter, exportLimiter };

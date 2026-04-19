@@ -50,6 +50,8 @@ const userSchema = new mongoose.Schema(
     isVerified: { type: Boolean, default: false },
     profileCompleted: { type: Boolean, default: false },
     branch_id: { type: mongoose.Schema.Types.ObjectId, ref: "Branch" },
+    /** Canonical branch reference for new modules; mirrored with branch_id for compatibility. */
+    branch: { type: mongoose.Schema.Types.ObjectId, ref: "Branch", default: null },
     /** casual | reliever | contract | supervisor | general_supervisor */
     employment_type: {
       type: String,
@@ -93,6 +95,12 @@ userSchema.pre("save", async function (next) {
   if (!this.password) return next();
   this.password = await bcrypt.hash(this.password, 12);
   this.password_changed_at = new Date();
+  next();
+});
+
+userSchema.pre("validate", function syncBranchRefs(next) {
+  if (this.branch && !this.branch_id) this.branch_id = this.branch;
+  if (this.branch_id && !this.branch) this.branch = this.branch_id;
   next();
 });
 

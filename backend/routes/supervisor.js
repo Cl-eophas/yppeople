@@ -21,6 +21,16 @@ router.post(
   validate,
   sup.manualClockIn
 );
+router.post(
+  "/attendance/manual-clockin",
+  guard,
+  [body("staffId").isMongoId(), body("reason").trim().isLength({ min: 2, max: 500 })],
+  validate,
+  (req, res, next) => {
+    req.body.staff_id = req.body.staffId;
+    return sup.manualClockIn(req, res, next);
+  }
+);
 
 router.post(
   "/attendance/force-clockout/request",

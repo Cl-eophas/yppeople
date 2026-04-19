@@ -2,7 +2,7 @@
 const Attendance = require("../models/Attendance");
 const User = require("../models/User");
 const StaffProfile = require("../models/StaffProfile");
-const { isWithinGeofence } = require("../utils/geo");
+const { haversineDistance, isWithinGeofence } = require("../utils/geo");
 const { requiresFixedBranch } = require("../utils/branchEmployment");
 const { getTodayString } = require("../utils/dateHelpers");
 const { emitAttendanceChanged } = require("../realtime");
@@ -12,6 +12,7 @@ const Notification = require("../models/Notification");
 const SecurityEvent = require("../models/SecurityEvent");
 const ForceClockRequest = require("../models/ForceClockRequest");
 const { logAttendanceEvent } = require("../utils/attendanceClock");
+const { clientIp, checkVpnProxy } = require("../utils/networkRisk");
 
 async function persistClockIn({ staffId, branchOid, today, now, locIn, shiftStart, status, lateMinutes, source }) {
   const payload = {
@@ -62,13 +63,98 @@ async function persistClockIn({ staffId, branchOid, today, now, locIn, shiftStar
   }
 }
 
+async function evaluateGeoAndRisk({ req, user, latNum, lonNum, accNum }) {
+  const branch = user.branch || user.branch_id;
+  const branchLat = Number(branch?.branchLocation?.lat ?? branch?.latitude);
+  const branchLng = Number(branch?.branchLocation?.lng ?? branch?.longitude);
+  if (!Number.isFinite(branchLat) || !Number.isFinite(branchLng)) {
+    const err = new Error("Branch location is not configured.");
+    err.statusCode = 400;
+    err.code = "ERR_BRANCH_GEO";
+    throw err;
+  }
+  const baseRadius = Number(branch?.clockInRadius || branch?.radius_meters || 1000);
+  const effectiveRadius = baseRadius + accNum;
+  const distance = Math.round(haversineDistance(latNum, lonNum, branchLat, branchLng));
+  const withinFence = distance <= effectiveRadius;
+  const ipAddress = clientIp(req);
+  const vpn = await checkVpnProxy(ipAddress);
+  return { branch, distance, effectiveRadius, withinFence, ipAddress, vpn };
+}
+
+exports.clockInPrecheck = async (req, res) => {
+  try {
+    const { latitude, longitude, accuracy } = req.body;
+    const latNum = parseFloat(latitude);
+    const lonNum = parseFloat(longitude);
+    const accNum = parseFloat(accuracy);
+    if (!Number.isFinite(latNum) || !Number.isFinite(lonNum) || !Number.isFinite(accNum)) {
+      return res.status(400).json({ success: false, message: "Invalid location payload.", code: "ERR_INVALID_COORDS" });
+    }
+    if (accNum > 500) {
+      return res.status(400).json({
+        success: false,
+        message: `Location accuracy too low (±${Math.round(accNum)}m). Move to open sky and try again.`,
+        code: "ERR_LOW_GPS_ACCURACY",
+      });
+    }
+    const user = await User.findById(req.user._id).populate("branch_id");
+    if (!user) return res.status(404).json({ success: false, message: "User not found." });
+    if (user.status !== "approved" || !user.is_active) {
+      return res.status(403).json({ success: false, message: "Only approved, active accounts can clock in." });
+    }
+    if (!user.branch_id) return res.status(400).json({ success: false, message: "No branch assigned.", code: "ERR_NO_BRANCH" });
+    let geo;
+    try {
+      geo = await evaluateGeoAndRisk({ req, user, latNum, lonNum, accNum });
+    } catch (e) {
+      if (e.statusCode) {
+        return res.status(e.statusCode).json({ success: false, message: e.message, code: e.code || "ERR_GEO" });
+      }
+      throw e;
+    }
+    if (geo.vpn.blocked) {
+      return res.status(403).json({
+        success: false,
+        message: "VPN or proxy detected. Clock-in requires your real network location.",
+        code: "ERR_VPN_PROXY",
+      });
+    }
+    return res.json({
+      success: true,
+      data: {
+        distance: geo.distance,
+        effectiveRadius: Math.round(geo.effectiveRadius),
+        withinRange: geo.withinFence,
+        vpnOk: !geo.vpn.blocked,
+      },
+    });
+  } catch (err) {
+    console.error("[clockInPrecheck]", err);
+    return res.status(500).json({ success: false, message: "Server error.", code: "ERR_SERVER" });
+  }
+};
+
 exports.clockIn = async (req, res) => {
   try {
     const staffId = req.user._id;
-    const { latitude, longitude } = req.body;
+    const { latitude, longitude, accuracy, locationName, deviceMeta } = req.body;
 
-    if (latitude === undefined || longitude === undefined) {
+    if (latitude === undefined || longitude === undefined || accuracy === undefined) {
       return res.status(400).json({ success: false, message: "GPS coordinates required." });
+    }
+    const latNum = parseFloat(latitude);
+    const lonNum = parseFloat(longitude);
+    const accNum = parseFloat(accuracy);
+    if (!Number.isFinite(latNum) || !Number.isFinite(lonNum) || !Number.isFinite(accNum)) {
+      return res.status(400).json({ success: false, message: "Invalid location payload.", code: "ERR_INVALID_COORDS" });
+    }
+    if (accNum > 500) {
+      return res.status(400).json({
+        success: false,
+        message: `Location accuracy too low (±${Math.round(accNum)}m). Move to open sky and try again.`,
+        code: "ERR_LOW_GPS_ACCURACY",
+      });
     }
 
     const user = await User.findById(staffId).populate("branch_id");
@@ -108,20 +194,59 @@ exports.clockIn = async (req, res) => {
       });
     }
 
-    const branch = user.branch_id;
-    const { withinFence, distance } = isWithinGeofence(
-      parseFloat(latitude),
-      parseFloat(longitude),
-      branch.latitude,
-      branch.longitude,
-      branch.radius_meters
-    );
+    const branch = user.branch || user.branch_id;
+    const branchLat = Number(branch?.branchLocation?.lat ?? branch?.latitude);
+    const branchLng = Number(branch?.branchLocation?.lng ?? branch?.longitude);
+    if (!Number.isFinite(branchLat) || !Number.isFinite(branchLng)) {
+      return res.status(400).json({ success: false, message: "Branch location is not configured.", code: "ERR_BRANCH_GEO" });
+    }
+    if (!Number.isFinite(branchLat) || !Number.isFinite(branchLng)) {
+      return res.status(400).json({ success: false, message: "Branch location is not configured.", code: "ERR_BRANCH_GEO" });
+    }
+    const baseRadius = Number(branch?.clockInRadius || branch?.radius_meters || 1000);
+    const effectiveRadius = baseRadius + accNum;
+    const distance = Math.round(haversineDistance(latNum, lonNum, branchLat, branchLng));
+    const withinFence = distance <= effectiveRadius;
+
+    const ipAddress = clientIp(req);
+    const vpn = await checkVpnProxy(ipAddress);
+    if (vpn.blocked) {
+      return res.status(403).json({
+        success: false,
+        message: "VPN or proxy detected. Clock-in must be from your real location.",
+        code: "ERR_VPN_PROXY",
+      });
+    }
+
+    const last = await Attendance.findOne({
+      staff_id: staffId,
+      "coords.lat": { $exists: true },
+      "coords.lng": { $exists: true },
+      clock_in: { $ne: null },
+    })
+      .sort({ clock_in: -1 })
+      .select("clock_in coords")
+      .lean();
+    if (last?.coords?.lat != null && last?.coords?.lng != null && last?.clock_in) {
+      const dtHours = Math.max(1 / 3600, (Date.now() - new Date(last.clock_in).getTime()) / 3600000);
+      const distM = haversineDistance(latNum, lonNum, Number(last.coords.lat), Number(last.coords.lng));
+      const speed = distM / 1000 / dtHours;
+      if (speed > 500) {
+        return res.status(400).json({
+          success: false,
+          message: "Location jump detected. Please try again or contact your supervisor.",
+          code: "ERR_LOCATION_JUMP",
+        });
+      }
+    }
 
     if (!withinFence) {
       return res.status(400).json({
         success: false,
-        message: `You are ${distance}m away. Must be within ${branch.radius_meters}m of ${branch.name}.`,
+        message: `You are ${distance}m away. Must be within ${Math.round(effectiveRadius)}m of ${branch.name}.`,
+        code: "ERR_OUT_OF_RANGE",
         distance,
+        effectiveRadius: Math.round(effectiveRadius),
       });
     }
 
@@ -157,7 +282,7 @@ exports.clockIn = async (req, res) => {
       status = "unscheduled";
     }
 
-    const locIn = { latitude: parseFloat(latitude), longitude: parseFloat(longitude) };
+    const locIn = { latitude: latNum, longitude: lonNum };
     const branchOid = branch._id || branch;
 
     let attendance;
@@ -220,9 +345,24 @@ exports.clockIn = async (req, res) => {
       });
     }
 
-    emitAttendanceChanged({ branch_id: user.branch_id._id || user.branch_id, date: today });
+    attendance.coords = { lat: latNum, lng: lonNum, accuracy: accNum };
+    attendance.locationName = String(locationName || "").slice(0, 500) || undefined;
+    attendance.distance = distance;
+    attendance.ipAddress = ipAddress;
+    attendance.deviceMeta = deviceMeta || {};
+    attendance.vpnFlagged = Boolean(vpn.flagged || accNum < 3);
+    if (!attendance.branch_id) attendance.branch_id = branchOid;
+    attendance.matchStatus = scheduled ? "matched" : "unscheduled";
+    await attendance.save();
 
-    res.json({ success: true, message: "Clocked in successfully.", data: attendance });
+    emitAttendanceChanged({ branch_id: user.branch_id?._id || user.branch_id || user.branch, date: today });
+
+    res.json({
+      success: true,
+      message: "Clocked in successfully.",
+      data: attendance,
+      geo: { distance, effectiveRadius: Math.round(effectiveRadius) },
+    });
   } catch (err) {
     console.error("[clockIn]", err);
     res.status(500).json({ success: false, message: "Server error." });
@@ -384,5 +524,38 @@ exports.requestForcedClockIn = async (req, res) => {
   } catch (err) {
     console.error("[requestForcedClockIn]", err);
     return res.status(500).json({ success: false, message: "Server error." });
+  }
+};
+
+exports.reverseGeocode = async (req, res) => {
+  try {
+    const lat = Number(req.query.lat);
+    const lon = Number(req.query.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+      return res.status(400).json({ success: false, message: "Invalid coordinates.", code: "ERR_INVALID_COORDS" });
+    }
+    const url = `https://nominatim.openstreetmap.org/reverse?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(
+      lon
+    )}&format=json&addressdetails=1`;
+    const r = await fetch(url, {
+      headers: {
+        Accept: "application/json",
+        "User-Agent": "YPPEOPLE-WMS/1.0 (attendance reverse geocode; +https://openstreetmap.org/copyright)",
+        "Accept-Language": "en",
+      },
+    });
+    if (!r.ok) {
+      return res.status(502).json({ success: false, message: "Geocoding service unavailable.", code: "ERR_GEOCODE_DOWN" });
+    }
+    const j = await r.json();
+    const parts = String(j?.display_name || "")
+      .split(",")
+      .map((x) => x.trim())
+      .filter(Boolean);
+    const noCountry = /kenya/i.test(parts[parts.length - 1]) ? parts.slice(0, -1) : parts;
+    return res.json({ success: true, data: { locationName: noCountry.slice(0, 5).join(", ") } });
+  } catch (err) {
+    console.error("[reverseGeocode]", err);
+    return res.status(500).json({ success: false, message: "Server error.", code: "ERR_SERVER" });
   }
 };

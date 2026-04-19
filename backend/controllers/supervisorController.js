@@ -150,7 +150,7 @@ exports.getTodayAttendance = async (req, res) => {
 // ─── POST /supervisor/attendance/manual-entry ─────────────────
 exports.manualClockIn = async (req, res) => {
   try {
-    const { staff_id, reason } = req.body;
+    const { staff_id, reason, branchId } = req.body;
     if (!staff_id || !reason) {
       return res.status(400).json({ success: false, message: "staff_id and reason required." });
     }
@@ -165,7 +165,7 @@ exports.manualClockIn = async (req, res) => {
       return res.status(403).json({ success: false, message: "Staff account is not approved or active." });
     }
 
-    const branchForAtt = staffUser.branch_id || req.user.branch_id;
+    const branchForAtt = branchId || staffUser.branch_id || req.user.branch_id;
     if (!branchForAtt) {
       return res.status(400).json({
         success: false,
@@ -192,7 +192,7 @@ exports.manualClockIn = async (req, res) => {
             shift_start: shiftStart,
             status: "supervisor_assisted",
             is_supervisor_entry: true,
-            source: "supervisor",
+            source: "supervisor_override",
             notes: reason,
           },
           { new: true }
@@ -205,7 +205,7 @@ exports.manualClockIn = async (req, res) => {
           shift_start: shiftStart,
           status: "supervisor_assisted",
           is_supervisor_entry: true,
-          source: "supervisor",
+          source: "supervisor_override",
           notes: reason,
         });
 
