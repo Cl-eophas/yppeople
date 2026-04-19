@@ -9,6 +9,8 @@ const shiftSchema = new mongoose.Schema(
     end_time: { type: String, required: true },
     end_next_day: { type: Boolean, default: false },
     assigned_by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    /** manual = one-off UI; timetable = materialized from weekly timetable save */
+    source: { type: String, enum: ["manual", "timetable"], default: "manual" },
   },
   { timestamps: { createdAt: "created_at", updatedAt: "updated_at" } }
 );

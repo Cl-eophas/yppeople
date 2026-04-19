@@ -1403,18 +1403,91 @@ async function loadAttHistory() {
 }
 
 function staffShiftsView() {
-  const n = new Date();
   return `<div id="view-s-shifts" class="view">
     <div class="page-head">
-      <div><div class="page-title">My Shifts</div><div class="page-sub">Assigned schedule (9-hour shifts)</div></div>
-      <button type="button" class="btn btn-ghost" onclick="loadStaffShifts()">↺ Refresh</button>
+      <div><div class="page-title">My Shifts</div><div class="page-sub">Saved weekly timetable (read-only) and materialized shift rows</div></div>
+      <button type="button" class="btn btn-ghost" onclick="loadStaffShiftsFull()">↺ Refresh</button>
     </div>
     <div class="page-body">
-      <div class="card"><div id="s-shifts-body"><div class="spinner"></div></div></div>
+      <div class="card" style="margin-bottom:14px;">
+        <div class="card-head">Weekly timetable</div>
+        <p style="font-size:12px;color:var(--muted);">Supervisor-saved schedule only. Drafts are never shown.</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
+          <button type="button" class="btn btn-sm btn-ghost" onclick="staffTtNavWeek(-1)">← Prev week</button>
+          <span id="staff-tt-week-lbl" style="font-weight:700;font-size:13px;">—</span>
+          <button type="button" class="btn btn-sm btn-ghost" onclick="staffTtNavWeek(1)">Next week →</button>
+        </div>
+        <div id="staff-tt-grid"><div class="spinner"></div></div>
+      </div>
+      <div class="card"><div class="card-head">Shift records (roster)</div><div id="s-shifts-body"><div class="spinner"></div></div></div>
     </div>
   </div>`;
 }
 
+let STAFF_TT_WEEK = null;
+function isoMondayLocal(ymd) {
+  const x = new Date(`${ymd}T12:00:00`);
+  const day = x.getDay();
+  const off = day === 0 ? -6 : 1 - day;
+  x.setDate(x.getDate() + off);
+  return x.toISOString().slice(0, 10);
+}
+function ttEnumerateWeekDates(mon) {
+  const d = new Date(`${mon}T12:00:00`);
+  const out = [];
+  for (let i = 0; i < 7; i++) {
+    const v = new Date(d);
+    v.setDate(d.getDate() + i);
+    out.push(v.toISOString().slice(0, 10));
+  }
+  return out;
+}
+async function loadStaffTimetableReadonly() {
+  const grid = $('staff-tt-grid');
+  if (!grid) return;
+  const wk = STAFF_TT_WEEK || isoMondayLocal(new Date().toISOString().slice(0, 10));
+  STAFF_TT_WEEK = wk;
+  const lbl = $('staff-tt-week-lbl');
+  if (lbl) lbl.textContent = wk;
+  grid.innerHTML = '<div class="spinner"></div>';
+  try {
+    const res = await api('GET', `/timetable/staff/my-week?week_start=${encodeURIComponent(wk)}`);
+    const today = new Date().toISOString().slice(0, 10);
+    const dates = ttEnumerateWeekDates(wk);
+    const DKEYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+    if (!res.has_saved_schedule || !res.schedule) {
+      grid.innerHTML = '<p class="empty">No saved timetable for this week.</p>';
+      return;
+    }
+    const tmpl = res.templates || [];
+    const lookup = (sid) => {
+      const t = tmpl.find((x) => String(x._id) === String(sid));
+      return t ? `${t.label} · ${t.start_time}–${t.end_time}` : '—';
+    };
+    const cells = DKEYS.map((dk, i) => {
+      const c = res.schedule[dk] || { is_off: false, shift_id: null };
+      const isToday = dates[i] === today;
+      let lab = 'NONE';
+      if (c.is_off) lab = 'OFF';
+      else if (c.shift_id) lab = lookup(c.shift_id);
+      return `<td style="padding:8px;font-size:12px;white-space:nowrap;${isToday ? 'outline:2px solid var(--accent);border-radius:4px;' : ''}">${escHtml(lab)}</td>`;
+    }).join('');
+    grid.innerHTML = `<div style="overflow-x:auto;"><table class="tbl"><thead><tr><th style="min-width:120px;">You</th><th>Mon</th><th>Tue</th><th>Wed</th><th>Thu</th><th>Fri</th><th>Sat</th><th>Sun</th></tr></thead><tbody><tr><td style="font-weight:700;">Schedule</td>${cells}</tr></tbody></table></div>`;
+  } catch (e) {
+    grid.innerHTML = `<p style="color:var(--danger);">${escHtml(e.message)}</p>`;
+  }
+}
+function staffTtNavWeek(delta) {
+  const base = STAFF_TT_WEEK || isoMondayLocal(new Date().toISOString().slice(0, 10));
+  const cur = new Date(`${base}T12:00:00`);
+  cur.setDate(cur.getDate() + delta * 7);
+  STAFF_TT_WEEK = isoMondayLocal(cur.toISOString().slice(0, 10));
+  loadStaffTimetableReadonly();
+}
+async function loadStaffShiftsFull() {
+  await loadStaffTimetableReadonly();
+  await loadStaffShifts();
+}
 async function loadStaffShifts() {
   const el = $('s-shifts-body');
   if (!el) return;
@@ -1768,6 +1841,7 @@ function buildSupervisorShell() {
     {view:'sv-leave',  icon:'📋',label:'Leave Requests'},
     {view:'sv-msg',    icon:'📢',label:'Send Message'},
     {view:'sv-shifts', icon:'📆',label:'Shifts'},
+    {view:'sv-tt',   icon:'📅',label:'Timetable'},
     {divider:true,label:'My Account'},
     {view:'s-dash',    icon:'⊞',label:'My Dashboard'},
     {view:'s-clock',   icon:'◷',label:'My Attendance'},
@@ -1786,6 +1860,7 @@ function buildSupervisorShell() {
     ${svLeaveView()}
     ${svMsgView()}
     ${svShiftsView()}
+    ${svTimetableView()}
     ${staffDashView()}
     ${staffClockView()}
     ${staffShiftsView()}
@@ -1801,6 +1876,211 @@ function buildSupervisorShell() {
   loadSvAtt();
   loadSvStaff();
   startLiveClock();
+}
+
+// ─ Supervisor: weekly timetable (draft + save) ─────────────────
+const TT_DAYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+let SV_TT_WEEK = null;
+let SV_TT_DRAFT = {};
+let SV_TT_STAFF = [];
+let SV_TT_TEMPLATES = [];
+let SV_TT_SERVER = {};
+
+function TT_emptySched() {
+  const o = {};
+  for (const d of TT_DAYS) o[d] = { shift_id: null, is_off: false };
+  return o;
+}
+
+function svTimetableView() {
+  return `<div id="view-sv-tt" class="view">
+    <div class="page-head">
+      <div><div class="page-title">Weekly timetable</div><div class="page-sub">Edit in draft, then Save. Clock-in is never blocked.</div></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+        <button type="button" class="btn btn-ghost btn-sm" onclick="svTtNav(0);">This week</button>
+        <button type="button" class="btn btn-ghost btn-sm" onclick="svTtNav(-1)">← Prev</button>
+        <span id="sv-tt-week" style="font-weight:700;">—</span>
+        <button type="button" class="btn btn-ghost btn-sm" onclick="svTtNav(1)">Next →</button>
+        <select class="form-select" id="sv-tt-emp" style="width:160px;" onchange="loadSvTimetable()">
+          <option value="">All employment</option>
+          <option value="casual">Casual</option>
+          <option value="reliever">Reliever</option>
+          <option value="contract">Contract</option>
+        </select>
+        <button type="button" class="btn btn-primary" onclick="svTtSave()">Save week</button>
+      </div>
+    </div>
+    <div class="page-body">
+      <div class="g2" style="margin-bottom:14px;">
+        <div class="card">
+          <div class="card-head">Branch shift templates</div>
+          <div id="sv-tt-templates" style="font-size:12px;margin-bottom:10px;"></div>
+          <div class="form-group"><label class="form-label">Label</label><input class="form-input" id="sv-tt-tpl-lab" placeholder="S1"/></div>
+          <div class="form-group"><label class="form-label">Name</label><input class="form-input" id="sv-tt-tpl-name" placeholder="Morning"/></div>
+          <div class="g2">
+            <div class="form-group"><label class="form-label">Start</label><input class="form-input" id="sv-tt-tpl-st" value="08:00"/></div>
+            <div class="form-group"><label class="form-label">End</label><input class="form-input" id="sv-tt-tpl-en" value="17:00"/></div>
+          </div>
+          <button type="button" class="btn btn-role btn-sm" onclick="svTtAddTpl()">Add template</button>
+          <div id="sv-tt-tpl-msg" style="font-size:12px;margin-top:6px;"></div>
+        </div>
+        <div class="card">
+          <div class="card-head">Notes</div>
+          <p style="font-size:12px;color:var(--muted);margin:0;">One saved schedule per staff per week. NONE = not rostered (casual: not absent). OFF = not working. Saving overwrites that week’s shifts from the timetable engine.</p>
+        </div>
+      </div>
+      <div class="card"><div id="sv-tt-msg"></div><div style="overflow-x:auto;" id="sv-tt-grid"><div class="spinner"></div></div></div>
+    </div>
+  </div>`;
+}
+
+async function loadSvTimetable() {
+  const grid = $('sv-tt-grid');
+  if (!grid) return;
+  const wk = SV_TT_WEEK || isoMondayLocal(new Date().toISOString().slice(0, 10));
+  SV_TT_WEEK = wk;
+  const wl = $('sv-tt-week');
+  if (wl) wl.textContent = wk;
+  grid.innerHTML = '<div class="spinner"></div>';
+  try {
+    const emp = $('sv-tt-emp')?.value || '';
+    const qs = new URLSearchParams({ week_start: wk });
+    if (emp) qs.set('employment_type', emp);
+    const res = await api('GET', `/timetable/supervisor/week?${qs.toString()}`);
+    SV_TT_STAFF = res.staff || [];
+    SV_TT_TEMPLATES = res.templates || [];
+    SV_TT_SERVER = res.schedules || {};
+    SV_TT_DRAFT = {};
+    for (const s of SV_TT_STAFF) {
+      const sid = String(s._id);
+      const sc = SV_TT_SERVER[sid];
+      SV_TT_DRAFT[sid] = sc ? JSON.parse(JSON.stringify(sc)) : TT_emptySched();
+    }
+    svTtRenderTemplates();
+    svTtRenderGrid();
+  } catch (e) {
+    grid.innerHTML = `<p style="color:var(--danger);">${escHtml(e.message)}</p>`;
+  }
+}
+
+function svTtRenderTemplates() {
+  const el = $('sv-tt-templates');
+  if (!el) return;
+  if (!SV_TT_TEMPLATES.length) {
+    el.innerHTML = '<p class="empty" style="margin:0;">No templates yet.</p>';
+    return;
+  }
+  el.innerHTML = SV_TT_TEMPLATES.map((t) => `<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border);">
+    <span><strong>${escHtml(t.label)}</strong> ${escHtml(t.name || '')} · ${escHtml(t.start_time)}–${escHtml(t.end_time)}</span>
+    <button type="button" class="btn btn-danger btn-sm" onclick="svTtDelTpl('${t._id}')">Delete</button>
+  </div>`).join('');
+}
+
+function svTtCellOptions(c) {
+  let cur = '';
+  if (c.is_off) cur = '__OFF__';
+  else if (c.shift_id) cur = String(c.shift_id);
+  const parts = [
+    `<option value="" ${cur === '' ? 'selected' : ''}>NONE</option>`,
+    `<option value="__OFF__" ${cur === '__OFF__' ? 'selected' : ''}>OFF</option>`,
+  ];
+  for (const t of SV_TT_TEMPLATES) {
+    const id = String(t._id);
+    parts.push(`<option value="${id}" ${cur === id ? 'selected' : ''}>${escHtml(t.label)} (${escHtml(t.start_time)}–${escHtml(t.end_time)})</option>`);
+  }
+  return parts.join('');
+}
+
+function svTtRenderGrid() {
+  const grid = $('sv-tt-grid');
+  if (!grid) return;
+  if (!SV_TT_STAFF.length) {
+    grid.innerHTML = '<p class="empty">No staff match this filter.</p>';
+    return;
+  }
+  const head = `<thead><tr><th style="min-width:140px;">Staff</th><th>Mon</th><th>Tue</th><th>Wed</th><th>Thu</th><th>Fri</th><th>Sat</th><th>Sun</th></tr></thead>`;
+  const body = SV_TT_STAFF.map((s) => {
+    const sid = String(s._id);
+    const dr = SV_TT_DRAFT[sid] || TT_emptySched();
+    const cells = TT_DAYS.map((day) => {
+      const c = dr[day] || { shift_id: null, is_off: false };
+      return `<td style="padding:4px;"><select class="form-select" style="min-width:110px;font-size:11px;padding:4px;" data-sid="${sid}" data-day="${day}" onchange="svTtPick(this)">${svTtCellOptions(c)}</select></td>`;
+    }).join('');
+    return `<tr><td style="font-weight:700;font-size:12px;">${escHtml(s.name)} <span style="color:var(--muted);font-weight:400;">${escHtml(s.employment_type || '')}</span></td>${cells}</tr>`;
+  }).join('');
+  grid.innerHTML = `<table class="tbl">${head}<tbody>${body}</tbody></table>`;
+}
+
+function svTtPick(sel) {
+  const sid = sel.getAttribute('data-sid');
+  const day = sel.getAttribute('data-day');
+  const v = sel.value;
+  if (!SV_TT_DRAFT[sid]) SV_TT_DRAFT[sid] = TT_emptySched();
+  if (v === '__OFF__') SV_TT_DRAFT[sid][day] = { shift_id: null, is_off: true };
+  else if (!v) SV_TT_DRAFT[sid][day] = { shift_id: null, is_off: false };
+  else SV_TT_DRAFT[sid][day] = { shift_id: v, is_off: false };
+}
+
+async function svTtAddTpl() {
+  flash('sv-tt-tpl-msg', '');
+  const label = ($('sv-tt-tpl-lab')?.value || '').trim();
+  const name = ($('sv-tt-tpl-name')?.value || '').trim();
+  const start_time = ($('sv-tt-tpl-st')?.value || '').trim();
+  const end_time = ($('sv-tt-tpl-en')?.value || '').trim();
+  if (!label || !start_time || !end_time) {
+    flash('sv-tt-tpl-msg', 'Label and times required.');
+    return;
+  }
+  try {
+    await api('POST', '/timetable/supervisor/shift-templates', { label, name, start_time, end_time });
+    flash('sv-tt-tpl-msg', 'Added.', 'success');
+    loadSvTimetable();
+  } catch (e) {
+    flash('sv-tt-tpl-msg', e.message);
+  }
+}
+
+async function svTtDelTpl(id) {
+  if (!confirm('Delete this template? Timetable cells using it become NONE.')) return;
+  try {
+    await api('DELETE', `/timetable/supervisor/shift-templates/${id}`);
+    loadSvTimetable();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+function svTtNav(delta) {
+  const base = SV_TT_WEEK || isoMondayLocal(new Date().toISOString().slice(0, 10));
+  const cur = new Date(`${base}T12:00:00`);
+  if (delta === 0) {
+    SV_TT_WEEK = isoMondayLocal(new Date().toISOString().slice(0, 10));
+  } else {
+    cur.setDate(cur.getDate() + delta * 7);
+    SV_TT_WEEK = isoMondayLocal(cur.toISOString().slice(0, 10));
+  }
+  loadSvTimetable();
+}
+
+async function svTtSave() {
+  const msg = $('sv-tt-msg');
+  if (msg) msg.innerHTML = '';
+  if (!SV_TT_STAFF.length) {
+    if (msg) msg.innerHTML = '<div class="msg msg-error">No staff in grid for this filter.</div>';
+    return;
+  }
+  const wk = SV_TT_WEEK || isoMondayLocal(new Date().toISOString().slice(0, 10));
+  const rows = SV_TT_STAFF.map((s) => ({
+    staff_id: s._id,
+    schedule: SV_TT_DRAFT[String(s._id)] || TT_emptySched(),
+  }));
+  try {
+    const r = await api('PUT', '/timetable/supervisor/week', { week_start: wk, rows });
+    if (msg) msg.innerHTML = `<div class="msg msg-success">${escHtml(r.message || 'Saved')}</div>`;
+    loadSvTimetable();
+  } catch (e) {
+    if (msg) msg.innerHTML = `<div class="msg msg-error">${escHtml(e.message)}</div>`;
+  }
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -2387,6 +2667,7 @@ function buildAdminShell() {
     {divider:true,label:'Operations'},
     {view:'a-branches',icon:'🏢',label:'Branches'},
     {view:'a-shifts',  icon:'📆',label:'Shifts'},
+    {view:'a-tt',      icon:'📅',label:'Timetables'},
     {view:'a-att',     icon:'◷',label:'Attendance'},
     {view:'a-leave',   icon:'📅',label:'Leave'},
     {view:'a-lacc',    icon:'📊',label:'Leave accrual'},
@@ -2410,6 +2691,7 @@ function buildAdminShell() {
     ${adminCreateUserView()}
     ${adminBranchesView()}
     ${adminShiftsView()}
+    ${adminTimetableView()}
     ${adminAttView()}
     ${adminLeaveView()}
     ${adminLeaveAccrualView()}
@@ -2663,6 +2945,89 @@ function adminShiftsView(){return `<div id="view-a-shifts" class="view">
     </div>
   </div>
 </div>`;}
+
+function adminTimetableView() {
+  return `<div id="view-a-tt" class="view">
+  <div class="page-head">
+    <div><div class="page-title">Weekly timetables</div><div class="page-sub">Read-only visibility · saved schedules per branch</div></div>
+    <button type="button" class="btn btn-ghost" onclick="loadAdminTimetable()">↺ Refresh</button>
+  </div>
+  <div class="page-body">
+    <div class="card" style="margin-bottom:14px;">
+      <div class="g2" style="align-items:flex-end;">
+        <div class="form-group"><label class="form-label">Branch</label><select class="form-select" id="a-tt-br" onchange="loadAdminTimetable()"></select></div>
+        <div class="form-group"><label class="form-label">Week (Monday)</label><input class="form-input" type="date" id="a-tt-week" onchange="loadAdminTimetable()"/></div>
+        <button type="button" class="btn btn-ghost btn-sm" onclick="adminTtNav(-1)">← Prev</button>
+        <button type="button" class="btn btn-ghost btn-sm" onclick="adminTtNav(1)">Next →</button>
+      </div>
+    </div>
+    <div class="card"><div id="a-tt-out"><p class="empty">Select branch and week.</p></div></div>
+  </div>
+</div>`;
+}
+
+let ADMIN_TT_WEEK = null;
+function adminTtNav(delta) {
+  const el = $('a-tt-week');
+  const base = el?.value || isoMondayLocal(new Date().toISOString().slice(0, 10));
+  const cur = new Date(`${base}T12:00:00`);
+  cur.setDate(cur.getDate() + delta * 7);
+  ADMIN_TT_WEEK = isoMondayLocal(cur.toISOString().slice(0, 10));
+  if (el) el.value = ADMIN_TT_WEEK;
+  loadAdminTimetable();
+}
+
+async function loadAdminTimetable() {
+  const out = $('a-tt-out');
+  if (!out) return;
+  try {
+    if (!BRANCHES || !BRANCHES.length) {
+      const br = await api('GET', '/admin/branches');
+      BRANCHES = br.data || [];
+    }
+    const brSel = $('a-tt-br');
+    if (brSel && !brSel.options.length) {
+      brSel.innerHTML = (BRANCHES || []).map((b) => `<option value="${b._id}">${escHtml(b.name)}</option>`).join('');
+      if (BRANCHES[0]) brSel.value = BRANCHES[0]._id;
+    }
+    const branch_id = $('a-tt-br')?.value;
+    let wk = $('a-tt-week')?.value || ADMIN_TT_WEEK || isoMondayLocal(new Date().toISOString().slice(0, 10));
+    wk = isoMondayLocal(wk);
+    ADMIN_TT_WEEK = wk;
+    const wEl = $('a-tt-week');
+    if (wEl && !wEl.value) wEl.value = wk;
+    if (!branch_id) {
+      out.innerHTML = '<p class="empty">No branch.</p>';
+      return;
+    }
+    out.innerHTML = '<div class="spinner"></div>';
+    const res = await api('GET', `/timetable/admin/week?branch_id=${encodeURIComponent(branch_id)}&week_start=${encodeURIComponent(wk)}`);
+    const tmpl = res.templates || [];
+    const lookup = (sid) => {
+      const t = tmpl.find((x) => String(x._id) === String(sid));
+      return t ? `${t.label} ${t.start_time}–${t.end_time}` : '—';
+    };
+    const DKEYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+    const rows = (res.staff || [])
+      .map((s) => {
+        const sc = s.schedule;
+        if (!sc) return `<tr><td style="font-weight:700;">${escHtml(s.name)}</td><td colspan="7" class="empty">No saved week</td></tr>`;
+        const cells = DKEYS.map((dk) => {
+          const c = sc[dk] || { is_off: false, shift_id: null };
+          let lab = 'NONE';
+          if (c.is_off) lab = 'OFF';
+          else if (c.shift_id) lab = lookup(c.shift_id);
+          return `<td style="font-size:11px;">${escHtml(lab)}</td>`;
+        }).join('');
+        return `<tr><td style="font-weight:700;font-size:12px;">${escHtml(s.name)} <span style="color:var(--muted);">${escHtml(s.employment_type || '')}</span></td>${cells}</tr>`;
+      })
+      .join('');
+    out.innerHTML = `<p style="font-size:12px;color:var(--muted);margin:0 0 10px;">Templates: ${tmpl.map((t) => escHtml(`${t.label} (${t.start_time}–${t.end_time})`)).join(' · ') || '—'}</p>
+      <div style="overflow-x:auto;"><table class="tbl"><thead><tr><th>Staff</th><th>Mon</th><th>Tue</th><th>Wed</th><th>Thu</th><th>Fri</th><th>Sat</th><th>Sun</th></tr></thead><tbody>${rows || '<tr><td colspan="8" class="empty">No staff</td></tr>'}</tbody></table></div>`;
+  } catch (e) {
+    out.innerHTML = `<p style="color:var(--danger);">${escHtml(e.message)}</p>`;
+  }
+}
 
 async function ensureShiftUserCache(){
   if(window._shiftUsersCache) return;
@@ -4446,7 +4811,8 @@ window.showView = function(name, el) {
   if(name==='sv-leave')  loadSvLeave();
   if(name==='sv-msg')    { loadSvMsgDropdown(); }
   if(name==='sv-shifts') loadSvShifts();
-  if(name==='s-shifts')  loadStaffShifts();
+  if(name==='sv-tt')    loadSvTimetable();
+  if(name==='s-shifts')  loadStaffShiftsFull();
   // Admin
   if(name==='a-analytics'){ AN_PAGE=1; loadAdminAnalytics(); }
   if(name==='a-reports') loadAdminReportsPage();
@@ -4455,6 +4821,7 @@ window.showView = function(name, el) {
   if(name==='a-sessions')loadSessions();
   if(name==='a-users')   setAdminUserTab(ADMIN_USER_TAB||'pending');
   if(name==='a-shifts')  loadAdminShifts();
+  if(name==='a-tt')     loadAdminTimetable();
   if(name==='a-branches'){loadBranchesForAdmin();setTimeout(()=>initBranchMapIfNeeded(),120);}
   if(name==='a-att')     {
     const n=new Date();
