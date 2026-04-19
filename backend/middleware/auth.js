@@ -100,7 +100,7 @@ const staffOnly = (req, res, next) => {
   next();
 };
 
-/** Supervisors inherit all staff app capabilities (clock, leave, pay, etc.). */
+/** Branch supervisors inherit staff app capabilities (clock, leave, pay, etc.). General supervisors do not use this middleware. */
 const staffOrSupervisor = (req, res, next) => {
   if (!req.user) return res.status(401).json({ success: false, message: "Unauthorized." });
   if (!["staff", "supervisor"].includes(req.user.role))

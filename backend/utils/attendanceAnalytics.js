@@ -168,7 +168,7 @@ const branchWorkerQuery = (branchId) => ({
 /**
  * Paginated daily rows for branch (or all branches if branchId null — admin).
  */
-const buildDailyRows = async ({ branchId, dateStr, page = 1, limit = 50, search }) => {
+const buildDailyRows = async ({ branchId, dateStr, page = 1, limit = 50, search, employmentType }) => {
   let q = branchId
     ? branchWorkerQuery(branchId)
     : { role: { $in: ["staff", "supervisor"] }, is_active: true, status: "approved" };
@@ -178,6 +178,24 @@ const buildDailyRows = async ({ branchId, dateStr, page = 1, limit = 50, search 
       return { date: dateStr, rows: [], total: 0, page, limit, summary: countStatuses([]) };
     }
     q = { ...q, _id: { $in: searchIds } };
+  }
+
+  if (employmentType && ["casual", "reliever", "contract"].includes(employmentType)) {
+    const profs = await StaffProfile.find({ type: employmentType }).select("user_id").lean();
+    const allow = profs.map((p) => p.user_id);
+    if (!allow.length) {
+      return { date: dateStr, rows: [], total: 0, page, limit, summary: countStatuses([]) };
+    }
+    if (q._id && q._id.$in) {
+      const set = new Set(allow.map((id) => id.toString()));
+      const merged = q._id.$in.filter((id) => set.has(id.toString()));
+      if (!merged.length) {
+        return { date: dateStr, rows: [], total: 0, page, limit, summary: countStatuses([]) };
+      }
+      q._id = { $in: merged };
+    } else {
+      q._id = { $in: allow };
+    }
   }
 
   const skip = (page - 1) * limit;
@@ -212,6 +230,7 @@ const buildDailyRows = async ({ branchId, dateStr, page = 1, limit = 50, search 
     return {
       staff_id: profile?.staff_id || "—",
       user_id: u._id,
+      attendance_mongo_id: att?._id || null,
       name: u.name,
       role: u.role,
       branch: u.branch_id?.name || "—",

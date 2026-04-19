@@ -2031,12 +2031,14 @@ exports.getAllAttendance = async (req, res) => {
       const page = Math.max(1, parseInt(req.query.page, 10) || 1);
       const limit = Math.min(500, Math.max(1, parseInt(req.query.limit, 10) || 200));
       const bid = branch_id || null;
+      const emp = employment_type && employment_type !== "all" ? String(employment_type) : null;
       const out = await buildDailyRows({
         branchId: bid,
         dateStr: date,
         page,
         limit,
         search,
+        employmentType: emp,
       });
       return res.json({
         success: true,

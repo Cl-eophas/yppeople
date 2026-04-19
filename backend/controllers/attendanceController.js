@@ -25,6 +25,11 @@ async function persistClockIn({ staffId, branchOid, today, now, locIn, shiftStar
     source: source || "self",
   };
   const existing = await Attendance.findOne({ staff_id: staffId, date: today });
+  if (existing?.clock_in) {
+    const err = new Error("Already clocked in today.");
+    err.statusCode = 400;
+    throw err;
+  }
   try {
     if (existing?._id) {
       const doc = await Attendance.findByIdAndUpdate(existing._id, payload, { new: true });
@@ -42,6 +47,11 @@ async function persistClockIn({ staffId, branchOid, today, now, locIn, shiftStar
   } catch (err) {
     if (err.code === 11000) {
       const again = await Attendance.findOne({ staff_id: staffId, date: today });
+      if (again?.clock_in) {
+        const dup = new Error("Already clocked in today.");
+        dup.statusCode = 400;
+        throw dup;
+      }
       if (again) {
         const doc = await Attendance.findByIdAndUpdate(again._id, payload, { new: true });
         logAttendanceEvent("clock_in_retry", { staff_id: String(staffId), date: today });
@@ -150,17 +160,25 @@ exports.clockIn = async (req, res) => {
     const locIn = { latitude: parseFloat(latitude), longitude: parseFloat(longitude) };
     const branchOid = branch._id || branch;
 
-    const attendance = await persistClockIn({
-      staffId,
-      branchOid,
-      today,
-      now,
-      locIn,
-      shiftStart,
-      status,
-      lateMinutes,
-      source: "self",
-    });
+    let attendance;
+    try {
+      attendance = await persistClockIn({
+        staffId,
+        branchOid,
+        today,
+        now,
+        locIn,
+        shiftStart,
+        status,
+        lateMinutes,
+        source: "self",
+      });
+    } catch (e) {
+      if (e.statusCode === 400) {
+        return res.status(400).json({ success: false, message: e.message });
+      }
+      throw e;
+    }
 
     if (status === "late") {
       const escalatedUsers = await User.find({

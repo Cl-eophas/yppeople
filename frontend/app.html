@@ -742,6 +742,9 @@ let TOKEN = localStorage.getItem('wms_token') || '';
 let ME = null;          // current user object
 let GPS = null;         // {lat, lon}
 let BRANCHES = [];
+let ADMIN_ATT_MODE = 'daily';
+let ADMIN_ATT_PAGE = 1;
+const ADMIN_ATT_LIMIT = 200;
 let STAFF_LIST = [];    // branch staff for supervisor/admin
 let PENDING_DELETE_ID = null;
 let PENDING_REJECT_ID = null;
@@ -1768,6 +1771,7 @@ function buildSupervisorShell() {
     {divider:true,label:'My Account'},
     {view:'s-dash',    icon:'⊞',label:'My Dashboard'},
     {view:'s-clock',   icon:'◷',label:'My Attendance'},
+    {view:'s-shifts',  icon:'📆',label:'My Shifts'},
     {view:'s-leave',   icon:'📋',label:'My Leave'},
     {view:'s-pay',     icon:'💳',label:'My Pay'},
     {view:'s-uniform', icon:'👕',label:'My Uniform'},
@@ -3705,6 +3709,7 @@ async function loadBranchesForAdmin(){
   try{
     const res=await api('GET','/admin/branches');BRANCHES=res.data;
     const opts=res.data.map(b=>`<option value="${b._id}">${b.name}</option>`).join('');
+    if($('att-branch'))$('att-branch').innerHTML=`<option value="">All branches</option>${opts}`;
     if($('cu-branch'))$('cu-branch').innerHTML=`<option value="">No branch</option>${opts}`;
     const bl=$('br-list');if(bl)bl.innerHTML=res.data.length===0?'<p class="empty">No branches.</p>'
       :res.data.map(b=>`<div style="padding:12px 0;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;gap:12px;align-items:flex-start;cursor:pointer;" onclick="openBranchMonitor('${b._id}')">
@@ -3883,22 +3888,89 @@ async function submitBranchTransfer(){
   }catch(e){flash('mb-msg',e.message);}
 }
 
+function updateAttModeControls(){
+  const m = ADMIN_ATT_MODE;
+  const daily = $('att-ctl-daily'), weekly = $('att-ctl-weekly'), monthly = $('att-ctl-monthly');
+  if (daily) daily.style.display = m === 'daily' ? 'flex' : 'none';
+  if (weekly) weekly.style.display = m === 'weekly' ? 'flex' : 'none';
+  if (monthly) monthly.style.display = m === 'monthly' ? 'flex' : 'none';
+  [['att-tab-daily','daily'],['att-tab-weekly','weekly'],['att-tab-monthly','monthly']].forEach(([id, mode]) => {
+    const b = $(id);
+    if (b) b.className = 'btn btn-sm ' + (m === mode ? 'btn-primary' : 'btn-ghost');
+  });
+}
+function setAdminAttMode(mode){
+  ADMIN_ATT_MODE = mode;
+  ADMIN_ATT_PAGE = 1;
+  updateAttModeControls();
+  loadAdminAtt();
+}
+function attSummaryChips(sum){
+  if (!sum) return '';
+  const parts = Object.entries(sum).filter(([, n]) => n > 0).map(([k, v]) =>
+    `<span class="tag">${escHtml(k)}: ${v}</span>`);
+  return parts.length
+    ? `<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;">${parts.join('')}</div>`
+    : '';
+}
+function adminAttPrevPage(){
+  if (ADMIN_ATT_PAGE > 1) { ADMIN_ATT_PAGE--; loadAdminAtt(); }
+}
+function adminAttNextPage(total){
+  const pages = Math.max(1, Math.ceil(total / ADMIN_ATT_LIMIT));
+  if (ADMIN_ATT_PAGE < pages) { ADMIN_ATT_PAGE++; loadAdminAtt(); }
+}
+
 function adminAttView(){return `<div id="view-a-att" class="view">
-  <div class="page-head"><div><div class="page-title">Attendance Records</div><div class="page-sub">Export CSV for payroll (paid days follow casual/reliever rules; contract shows —)</div></div>
+  <div class="page-head"><div><div class="page-title">Attendance</div><div class="page-sub">Daily roster, weekly records, and monthly payroll view. Period export uses the same filters as the current tab.</div></div>
     <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
-      <input class="form-input" id="att-search" placeholder="YP Staff ID, name…" style="width:200px;" oninput="clearTimeout(window._attS);window._attS=setTimeout(loadAdminAtt,350)"/>
-      <input class="form-input" id="att-date" type="date" style="width:160px;" onchange="loadAdminAtt()"/>
-      <label style="font-size:12px;color:var(--muted);">Export month</label>
-      <input class="form-input" id="att-exp-month" type="number" min="1" max="12" style="width:64px;"/>
-      <input class="form-input" id="att-exp-year" type="number" min="2020" max="2100" style="width:88px;"/>
-      <button type="button" class="btn btn-primary" onclick="downloadAttendanceExport()">Download CSV</button>
+      <button type="button" id="att-tab-daily" class="btn btn-sm btn-primary" onclick="setAdminAttMode('daily')">Daily</button>
+      <button type="button" id="att-tab-weekly" class="btn btn-sm btn-ghost" onclick="setAdminAttMode('weekly')">Weekly</button>
+      <button type="button" id="att-tab-monthly" class="btn btn-sm btn-ghost" onclick="setAdminAttMode('monthly')">Monthly</button>
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:10px;">
+      <input class="form-input" id="att-search" placeholder="YP Staff ID, name, phone, ID…" style="width:240px;" oninput="clearTimeout(window._attS);window._attS=setTimeout(()=>{ADMIN_ATT_PAGE=1;loadAdminAtt();},350)"/>
+      <select class="form-select" id="att-branch" style="min-width:160px;" onchange="ADMIN_ATT_PAGE=1;loadAdminAtt()"><option value="">All branches</option></select>
+      <select class="form-select" id="att-emp" style="min-width:150px;" onchange="ADMIN_ATT_PAGE=1;loadAdminAtt()">
+        <option value="all">All employment</option>
+        <option value="casual">Casual</option>
+        <option value="reliever">Reliever</option>
+        <option value="contract">Contract</option>
+      </select>
+    </div>
+    <div id="att-ctl-daily" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:8px;">
+      <label style="font-size:12px;color:var(--muted);">Date</label>
+      <input class="form-input" id="att-date" type="date" style="width:160px;" onchange="ADMIN_ATT_PAGE=1;loadAdminAtt()"/>
+    </div>
+    <div id="att-ctl-weekly" style="display:none;flex-wrap:wrap;gap:8px;align-items:center;margin-top:8px;">
+      <label style="font-size:12px;color:var(--muted);">Week (any day in the week)</label>
+      <input class="form-input" id="att-week" type="date" style="width:160px;" onchange="loadAdminAtt()"/>
+    </div>
+    <div id="att-ctl-monthly" style="display:none;flex-wrap:wrap;gap:8px;align-items:center;margin-top:8px;">
+      <label style="font-size:12px;color:var(--muted);">Month</label>
+      <input class="form-input" id="att-month" type="number" min="1" max="12" style="width:64px;" onchange="loadAdminAtt()"/>
+      <input class="form-input" id="att-year" type="number" min="2020" max="2100" style="width:88px;" onchange="loadAdminAtt()"/>
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:10px;">
+      <button type="button" class="btn btn-ghost" onclick="downloadAttCalendarExport('csv')">Period CSV</button>
+      <button type="button" class="btn btn-primary" onclick="downloadAttCalendarExport('xlsx')">Period Excel</button>
+      <span style="font-size:12px;color:var(--muted);margin-left:4px;">Legacy payroll CSV</span>
+      <input class="form-input" id="att-exp-month" type="number" min="1" max="12" style="width:56px;"/>
+      <input class="form-input" id="att-exp-year" type="number" min="2020" max="2100" style="width:72px;"/>
+      <button type="button" class="btn btn-ghost btn-sm" onclick="downloadAttendanceExport()">Download</button>
     </div>
   </div>
-  <div class="page-body"><div class="card"><div id="a-att-content"><div class="spinner"></div></div></div></div>
+  <div class="page-body">
+    <div id="a-att-summary" class="card" style="margin-bottom:12px;display:none;padding:12px;"></div>
+    <div id="a-att-calendar" class="card" style="margin-bottom:12px;display:none;padding:12px;"></div>
+    <div class="card"><div id="a-att-content"><div class="spinner"></div></div></div>
+    <div id="att-pager" style="display:none;margin-top:12px;text-align:center;"></div>
+  </div>
 </div>`;}
 
 async function downloadAttendanceExport(){
-  const m=$('att-exp-month').value,y=$('att-exp-year').value;
+  const m=$('att-exp-month')?.value,y=$('att-exp-year')?.value;
+  if(!m||!y){alert('Choose export month and year.');return;}
   const url=`${API}/admin/attendance/export?month=${encodeURIComponent(m)}&year=${encodeURIComponent(y)}`;
   try{
     const r=await fetch(url,{headers:{Authorization:`Bearer ${TOKEN}`},credentials:'include'});
@@ -3919,27 +3991,227 @@ async function downloadAttendanceExport(){
   }catch(e){alert(e.message);}
 }
 
-async function loadAdminAtt(){
-  const d=$('att-date')?.value||today();
-  const s=$('att-search')?.value?.trim();
+async function downloadAttCalendarExport(fmt){
+  const mode = ADMIN_ATT_MODE;
+  const branch = $('att-branch')?.value || '';
+  const emp = $('att-emp')?.value || '';
+  let url = `${API}/admin/attendance/calendar-export?type=${encodeURIComponent(mode)}&format=${encodeURIComponent(fmt)}`;
+  if (branch) url += `&branch_id=${encodeURIComponent(branch)}`;
+  if (emp && emp !== 'all') url += `&employment_type=${encodeURIComponent(emp)}`;
+  if (mode === 'daily') {
+    url += `&date=${encodeURIComponent($('att-date')?.value || today())}`;
+  } else if (mode === 'weekly') {
+    url += `&week_start=${encodeURIComponent($('att-week')?.value || today())}`;
+  } else {
+    url += `&month=${encodeURIComponent($('att-month')?.value || '1')}&year=${encodeURIComponent($('att-year')?.value || String(new Date().getFullYear()))}`;
+  }
   try{
-    let path=`/admin/attendance?date=${encodeURIComponent(d)}`;
-    if(s) path += '&search='+encodeURIComponent(s);
-    const res=await api('GET',path);
-    if(!res.data.length){$('a-att-content').innerHTML='<p class="empty">No records.</p>';return;}
-    const bm={present:'b-present',late:'b-late',absent:'b-absent',leave:'b-leave',forced:'b-forced'};
-    $('a-att-content').innerHTML=`<table class="tbl"><thead><tr><th>YP Staff ID</th><th>Staff</th><th>Date</th><th>In</th><th>Out</th><th>Status</th><th>Notes</th><th>Edit</th></tr></thead>
-      <tbody>${res.data.map(r=>`<tr>
-        <td style="font-family:monospace;font-size:11px;font-weight:600;">${escHtml(r.yp_staff_id||'—')}</td>
-        <td style="font-weight:700;">${r.staff_id?.name||'—'}</td>
-        <td style="font-size:12px;">${r.date}</td>
-        <td>${ft(r.clock_in)}</td>
-        <td>${ft(r.clock_out)}${r.auto_clocked_out?' <span class="tag">auto</span>':''}</td>
-        <td><span class="badge ${bm[r.status]||''}">${r.status}</span></td>
-        <td style="font-size:11px;color:var(--muted);max-width:140px;">${r.notes||'—'}</td>
-        <td><button class="btn btn-warning btn-sm" onclick="openAttEdit('${r._id}','${r.clock_in||''}','${r.clock_out||''}')">Edit</button></td>
-      </tr>`).join('')}</tbody></table>`;
-  }catch(e){$('a-att-content').innerHTML=`<p style="color:var(--danger);">${e.message}</p>`;}
+    const r = await fetch(url, { headers: { Authorization: `Bearer ${TOKEN}` }, credentials: 'include' });
+    const ct = r.headers.get('Content-Type') || '';
+    if (ct.includes('application/json')) {
+      const j = await r.json();
+      throw new Error(j.message || 'Export failed');
+    }
+    const blob = await r.blob();
+    const dispo = r.headers.get('Content-Disposition') || '';
+    const fnMatch = dispo.match(/filename="?([^";]+)"?/);
+    const ext = fmt === 'xlsx' ? 'xlsx' : 'csv';
+    const fn = fnMatch ? fnMatch[1] : `attendance-${mode}.${ext}`;
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = fn;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  } catch (e) { alert(e.message); }
+}
+
+async function loadAdminAtt(){
+  const box = $('a-att-content');
+  if (!box) return;
+  const sumEl = $('a-att-summary'), calEl = $('a-att-calendar'), pgEl = $('att-pager');
+  if (sumEl) { sumEl.style.display = 'none'; sumEl.innerHTML = ''; }
+  if (calEl) { calEl.style.display = 'none'; calEl.innerHTML = ''; }
+  if (pgEl) { pgEl.style.display = 'none'; pgEl.innerHTML = ''; }
+  box.innerHTML = '<div class="spinner"></div>';
+  try {
+    if (!BRANCHES.length) await loadBranchesForAdmin();
+    else if ($('att-branch') && $('att-branch').options.length <= 1) {
+      $('att-branch').innerHTML = `<option value="">All branches</option>${BRANCHES.map((b) => `<option value="${b._id}">${escHtml(b.name)}</option>`).join('')}`;
+    }
+  } catch (e) {}
+
+  const s = $('att-search')?.value?.trim();
+  const branch = $('att-branch')?.value || '';
+  const emp = $('att-emp')?.value || 'all';
+  const bmDay = {
+    Present: 'b-present', Late: 'b-late', Absent: 'b-absent', 'On Leave': 'b-leave',
+    Sick: 'b-forced', 'Off Day': 'b-absent', 'Not scheduled': 'b-forced',
+  };
+  const bmW = {
+    present: 'b-present', late: 'b-late', absent: 'b-absent', leave: 'b-leave', forced: 'b-forced',
+    supervisor_assisted: 'b-present', unscheduled: 'b-forced',
+  };
+
+  try {
+    if (ADMIN_ATT_MODE === 'daily') {
+      const d = $('att-date')?.value || today();
+      let path = `/admin/attendance?type=daily&date=${encodeURIComponent(d)}&page=${ADMIN_ATT_PAGE}&limit=${ADMIN_ATT_LIMIT}`;
+      if (branch) path += `&branch_id=${encodeURIComponent(branch)}`;
+      if (emp !== 'all') path += `&employment_type=${encodeURIComponent(emp)}`;
+      if (s) path += `&search=${encodeURIComponent(s)}`;
+      const res = await api('GET', path);
+      const rows = res.data || [];
+      const total = res.total != null ? res.total : rows.length;
+      if (sumEl) {
+        sumEl.style.display = 'block';
+        sumEl.innerHTML = `<div style="font-size:13px;margin-bottom:6px;"><strong>${escHtml(d)}</strong> · ${total} staff (filtered) · page ${res.page || ADMIN_ATT_PAGE} of ${Math.max(1, Math.ceil(total / ADMIN_ATT_LIMIT) || 1)}</div>${attSummaryChips(res.summary)}`;
+      }
+      if (!rows.length) {
+        box.innerHTML = '<p class="empty">No rows for this filter.</p>';
+        if (total > ADMIN_ATT_LIMIT && pgEl) {
+          const pages = Math.max(1, Math.ceil(total / ADMIN_ATT_LIMIT));
+          pgEl.style.display = 'block';
+          pgEl.innerHTML = `<button type="button" class="btn btn-sm btn-ghost" ${ADMIN_ATT_PAGE <= 1 ? 'disabled' : ''} onclick="adminAttPrevPage()">Prev</button>
+            <span style="margin:0 10px;">${ADMIN_ATT_PAGE} / ${pages}</span>
+            <button type="button" class="btn btn-sm btn-ghost" ${ADMIN_ATT_PAGE >= pages ? 'disabled' : ''} onclick="adminAttNextPage(${total})">Next</button>`;
+        }
+        return;
+      }
+      box.innerHTML = `<table class="tbl"><thead><tr><th>YP Staff ID</th><th>Name</th><th>Branch</th><th>Employment</th><th>Status</th><th>In</th><th>Out</th><th>Edit</th></tr></thead><tbody>
+        ${rows.map((r) => {
+          const aid = r.attendance_mongo_id ? String(r.attendance_mongo_id) : '';
+          const cin = r.clock_in ? new Date(r.clock_in).toISOString() : '';
+          const cout = r.clock_out ? new Date(r.clock_out).toISOString() : '';
+          const editBtn = aid
+            ? `<button type="button" class="btn btn-warning btn-sm" onclick="openAttEdit('${aid}','${cin}','${cout}')">Edit</button>`
+            : '<span style="color:var(--muted);">—</span>';
+          return `<tr>
+            <td style="font-family:monospace;font-size:11px;font-weight:600;">${escHtml(String(r.staff_id || '—'))}</td>
+            <td style="font-weight:700;">${escHtml(r.name || '—')}</td>
+            <td>${escHtml(r.branch || '—')}</td>
+            <td>${escHtml(r.employment_type || '—')}</td>
+            <td><span class="badge ${bmDay[r.status] || ''}">${escHtml(r.status || '—')}</span></td>
+            <td>${ft(r.clock_in)}</td>
+            <td>${ft(r.clock_out)}</td>
+            <td>${editBtn}</td>
+          </tr>`;
+        }).join('')}
+      </tbody></table>`;
+      if (total > ADMIN_ATT_LIMIT && pgEl) {
+        const pages = Math.max(1, Math.ceil(total / ADMIN_ATT_LIMIT));
+        pgEl.style.display = 'block';
+        pgEl.innerHTML = `<button type="button" class="btn btn-sm btn-ghost" ${ADMIN_ATT_PAGE <= 1 ? 'disabled' : ''} onclick="adminAttPrevPage()">Prev</button>
+          <span style="margin:0 10px;">${ADMIN_ATT_PAGE} / ${pages}</span>
+          <button type="button" class="btn btn-sm btn-ghost" ${ADMIN_ATT_PAGE >= pages ? 'disabled' : ''} onclick="adminAttNextPage(${total})">Next</button>`;
+      }
+      return;
+    }
+
+    if (ADMIN_ATT_MODE === 'weekly') {
+      const ws = $('att-week')?.value || today();
+      let path = `/admin/attendance?type=weekly&week_start=${encodeURIComponent(ws)}`;
+      if (branch) path += `&branch_id=${encodeURIComponent(branch)}`;
+      if (s) path += `&search=${encodeURIComponent(s)}`;
+      const res = await api('GET', path);
+      const records = res.data || [];
+      if (sumEl) {
+        sumEl.style.display = 'block';
+        sumEl.innerHTML = `<div style="font-size:13px;"><strong>Week</strong> ${escHtml(res.week_start || '')} – ${escHtml(res.week_end || '')} · ${records.length} attendance rows</div>`;
+      }
+      if (res.calendar && calEl) {
+        calEl.style.display = 'block';
+        calEl.innerHTML = `<div style="font-size:12px;font-weight:600;margin-bottom:8px;">Daily summary</div><div style="display:flex;gap:6px;overflow-x:auto;padding-bottom:4px;">
+          ${res.calendar.map((day) => `<div style="flex:0 0 auto;min-width:120px;padding:8px;background:var(--panel);border-radius:8px;border:1px solid var(--border);">
+            <div style="font-weight:700;font-size:11px;">${escHtml(day.date)}</div>
+            <div style="font-size:11px;color:var(--muted);">${day.total_staff ?? '—'} staff</div>
+            <div style="font-size:10px;margin-top:4px;">${attSummaryChips(day.summary)}</div>
+          </div>`).join('')}
+        </div>`;
+      }
+      if (!records.length) {
+        box.innerHTML = '<p class="empty">No attendance rows this week.</p>';
+        return;
+      }
+      box.innerHTML = `<table class="tbl"><thead><tr><th>Date</th><th>Staff</th><th>In</th><th>Out</th><th>Status</th><th>Edit</th></tr></thead><tbody>
+        ${records.map((r) => {
+          const id = String(r._id);
+          const cin = r.clock_in ? new Date(r.clock_in).toISOString() : '';
+          const cout = r.clock_out ? new Date(r.clock_out).toISOString() : '';
+          return `<tr>
+            <td style="white-space:nowrap;font-size:12px;">${escHtml(r.date || '—')}</td>
+            <td style="font-weight:700;">${escHtml(r.staff_id?.name || '—')}</td>
+            <td>${ft(r.clock_in)}</td>
+            <td>${ft(r.clock_out)}${r.auto_clocked_out ? ' <span class="tag">auto</span>' : ''}</td>
+            <td><span class="badge ${bmW[r.status] || ''}">${escHtml(r.status || '—')}</span></td>
+            <td><button type="button" class="btn btn-warning btn-sm" onclick="openAttEdit('${id}','${cin}','${cout}')">Edit</button></td>
+          </tr>`;
+        }).join('')}
+      </tbody></table>`;
+      return;
+    }
+
+    const mo = $('att-month')?.value || String(new Date().getMonth() + 1);
+    const yr = $('att-year')?.value || String(new Date().getFullYear());
+    let path = `/admin/attendance?type=monthly&month=${encodeURIComponent(mo)}&year=${encodeURIComponent(yr)}`;
+    if (branch) path += `&branch_id=${encodeURIComponent(branch)}`;
+    if (emp !== 'all') path += `&employment_type=${encodeURIComponent(emp)}`;
+    if (s) path += `&search=${encodeURIComponent(s)}`;
+    const res = await api('GET', path);
+    const payroll = res.payroll_summary;
+    const prow = payroll?.rows || [];
+    const records = res.data || [];
+    if (sumEl) {
+      sumEl.style.display = 'block';
+      sumEl.innerHTML = `<div style="font-size:13px;"><strong>${escHtml(String(res.month))}/${escHtml(String(res.year))}</strong> · ${escHtml(res.start_date || '')} – ${escHtml(res.end_date || '')} · ${records.length} raw rows · ${prow.length} payroll rows</div>`;
+    }
+    if (res.calendar && calEl) {
+      const cal = res.calendar;
+      calEl.style.display = 'block';
+      calEl.innerHTML = `<div style="font-size:12px;font-weight:600;margin-bottom:8px;">Calendar (${cal.length} days)</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(72px,1fr));gap:6px;">
+        ${cal.map((day) => `<div style="padding:6px;background:var(--panel);border-radius:6px;border:1px solid var(--border);font-size:10px;">
+          <div style="font-weight:700;">${escHtml(String(day.date).slice(8))}</div>
+          <div style="color:var(--muted);">${day.total_staff ?? '—'}</div>
+        </div>`).join('')}
+        </div>`;
+    }
+    const payTable = prow.length
+      ? `<table class="tbl"><thead><tr><th>Staff ID</th><th>Name</th><th>Branch</th><th>Type</th><th>Present</th><th>Absent</th><th>Late</th><th>Leave</th><th>Off</th><th>Sick</th><th>Paid days</th></tr></thead><tbody>
+      ${prow.map((p) => `<tr>
+        <td style="font-family:monospace;font-size:11px;">${escHtml(String(p.staff_id || '—'))}</td>
+        <td>${escHtml(p.name || '—')}</td>
+        <td>${escHtml(p.branch || '—')}</td>
+        <td>${escHtml(p.employment_type || '—')}</td>
+        <td>${p.days_present ?? '—'}</td>
+        <td>${p.days_absent ?? '—'}</td>
+        <td>${p.days_late ?? '—'}</td>
+        <td>${p.leave_days ?? '—'}</td>
+        <td>${p.off_days ?? '—'}</td>
+        <td>${p.sick_days ?? '—'}</td>
+        <td style="font-size:11px;">${p.paid_days != null ? escHtml(String(p.paid_days)) : (p.paid_days_note ? escHtml(p.paid_days_note) : '—')}</td>
+      </tr>`).join('')}
+    </tbody></table>`
+      : '<p class="empty">No payroll rows.</p>';
+    const rawBlock = records.length
+      ? `<table class="tbl"><thead><tr><th>Date</th><th>Staff</th><th>In</th><th>Out</th><th>Status</th><th>Edit</th></tr></thead><tbody>${records.map((r) => {
+          const id = String(r._id);
+          const cin = r.clock_in ? new Date(r.clock_in).toISOString() : '';
+          const cout = r.clock_out ? new Date(r.clock_out).toISOString() : '';
+          return `<tr>
+            <td style="white-space:nowrap;font-size:12px;">${escHtml(r.date || '—')}</td>
+            <td>${escHtml(r.staff_id?.name || '—')}</td>
+            <td>${ft(r.clock_in)}</td>
+            <td>${ft(r.clock_out)}</td>
+            <td><span class="badge ${bmW[r.status] || ''}">${escHtml(r.status || '—')}</span></td>
+            <td><button type="button" class="btn btn-warning btn-sm" onclick="openAttEdit('${id}','${cin}','${cout}')">Edit</button></td>
+          </tr>`;
+        }).join('')}</tbody></table>`
+      : '<p class="empty">No raw rows.</p>';
+    box.innerHTML = `<h3 style="font-size:14px;margin:0 0 8px 0;">Payroll summary</h3>${payTable}
+      <h3 style="font-size:14px;margin:16px 0 8px 0;">Raw attendance</h3>${rawBlock}`;
+  } catch (e) {
+    box.innerHTML = `<p style="color:var(--danger);">${escHtml(e.message)}</p>`;
+  }
 }
 
 function openAttEdit(id,cin,cout){
@@ -4169,6 +4441,7 @@ window.showView = function(name, el) {
   if(name==='s-notifs')  loadNotifications();
   if(name==='s-profile') loadProfile();
   // Supervisor
+  if(name==='sv-dash')   loadSvDash();
   if(name==='sv-att')    loadSvAtt();
   if(name==='sv-leave')  loadSvLeave();
   if(name==='sv-msg')    { loadSvMsgDropdown(); }
@@ -4185,9 +4458,14 @@ window.showView = function(name, el) {
   if(name==='a-branches'){loadBranchesForAdmin();setTimeout(()=>initBranchMapIfNeeded(),120);}
   if(name==='a-att')     {
     const n=new Date();
-    $('att-date').value=today();
+    ADMIN_ATT_PAGE=1;
+    if($('att-date'))$('att-date').value=today();
+    if($('att-week'))$('att-week').value=today();
+    if($('att-month'))$('att-month').value=String(n.getMonth()+1);
+    if($('att-year'))$('att-year').value=String(n.getFullYear());
     if($('att-exp-month'))$('att-exp-month').value=String(n.getMonth()+1);
     if($('att-exp-year'))$('att-exp-year').value=String(n.getFullYear());
+    updateAttModeControls();
     loadAdminAtt();
   }
   if(name==='a-leave')   loadAdminLeave();
