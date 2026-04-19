@@ -262,6 +262,23 @@ router.get(
   validate,
   admin.exportAttendance
 );
+router.get(
+  "/attendance/calendar-export",
+  guard,
+  exportLimiter,
+  [
+    query("type").isIn(["daily", "weekly", "monthly"]),
+    query("format").optional().isIn(["csv", "xlsx"]),
+    query("date").optional().matches(/^\d{4}-\d{2}-\d{2}$/),
+    query("week_start").optional().matches(/^\d{4}-\d{2}-\d{2}$/),
+    query("month").optional().isInt({ min: 1, max: 12 }),
+    query("year").optional().isInt({ min: 2020, max: 2100 }),
+    query("branch_id").optional().isMongoId(),
+    query("employment_type").optional().trim().isLength({ max: 40 }),
+  ],
+  validate,
+  admin.exportAttendanceCalendar
+);
 router.patch(
   "/attendance/:id",
   guard,

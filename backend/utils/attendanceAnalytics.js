@@ -1,5 +1,6 @@
 const Leave = require("../models/Leave");
 const Attendance = require("../models/Attendance");
+const Shift = require("../models/Shift");
 const User = require("../models/User");
 const StaffProfile = require("../models/StaffProfile");
 const OffDay = require("../models/OffDay");
@@ -13,6 +14,8 @@ const STATUS = {
   ON_LEAVE: "On Leave",
   SICK: "Sick",
   OFF_DAY: "Off Day",
+  /** No scheduled shift that day — do not treat as absent (payroll / discipline). */
+  NOT_SCHEDULED: "Not scheduled",
 };
 
 const MS_DAY = 86400000;
@@ -69,9 +72,11 @@ const pickLeaveForDay = (leaves, dateStr) => {
  * @param {object|null} att Attendance doc or lean
  * @param {object|null} leave Leave doc covering day or null
  * @param {boolean} hasRecordedOffDay reliever/contract off-day record
+ * @param {boolean} hasShiftForDay shift assigned for this calendar date
+ * @param {string} [employmentType] casual | reliever | contract | supervisor
  * @returns {string} STATUS.*
  */
-const classifyDay = (dateStr, att, leave, hasRecordedOffDay = false) => {
+const classifyDay = (dateStr, att, leave, hasRecordedOffDay = false, hasShiftForDay = true, employmentType = "casual") => {
   if (leave) {
     if (leave.type === "sick_full" || leave.type === "sick_half") return STATUS.SICK;
     return STATUS.ON_LEAVE;
@@ -85,6 +90,8 @@ const classifyDay = (dateStr, att, leave, hasRecordedOffDay = false) => {
   }
 
   if (isWeekend(dateStr)) return STATUS.OFF_DAY;
+
+  if (!hasShiftForDay) return STATUS.NOT_SCHEDULED;
 
   return STATUS.ABSENT;
 };
@@ -115,6 +122,24 @@ const loadLeavesForDate = async (staffIds, dateStr) => {
   return byStaff;
 };
 
+/** staff_id string → Set of YYYY-MM-DD where a shift exists */
+const loadShiftsForRange = async (staffIds, startStr, endStr) => {
+  if (!staffIds.length) return new Map();
+  const docs = await Shift.find({
+    staff_id: { $in: staffIds },
+    shift_date: { $gte: startStr, $lte: endStr },
+  })
+    .select("staff_id shift_date")
+    .lean();
+  const map = new Map();
+  for (const d of docs) {
+    const id = d.staff_id.toString();
+    if (!map.has(id)) map.set(id, new Set());
+    map.get(id).add(d.shift_date);
+  }
+  return map;
+};
+
 /** staff_id string → Set of YYYY-MM-DD with recorded off-days */
 const loadOffDaysForRange = async (staffIds, startStr, endStr) => {
   if (!staffIds.length) return new Map();
@@ -137,13 +162,16 @@ const branchWorkerQuery = (branchId) => ({
   branch_id: branchId,
   role: { $in: ["staff", "supervisor"] },
   is_active: true,
+  status: "approved",
 });
 
 /**
  * Paginated daily rows for branch (or all branches if branchId null — admin).
  */
 const buildDailyRows = async ({ branchId, dateStr, page = 1, limit = 50, search }) => {
-  let q = branchId ? branchWorkerQuery(branchId) : { role: { $in: ["staff", "supervisor"] }, is_active: true };
+  let q = branchId
+    ? branchWorkerQuery(branchId)
+    : { role: { $in: ["staff", "supervisor"] }, is_active: true, status: "approved" };
   const searchIds = await matchUserIdsByStaffSearch(search);
   if (searchIds !== null) {
     if (!searchIds.length) {
@@ -159,13 +187,15 @@ const buildDailyRows = async ({ branchId, dateStr, page = 1, limit = 50, search 
   ]);
 
   const staffIds = users.map((u) => u._id);
-  const [attendance, leaveMap, profiles, offRows] = await Promise.all([
+  const [attendance, leaveMap, profiles, offRows, shiftRows] = await Promise.all([
     Attendance.find({ staff_id: { $in: staffIds }, date: dateStr }).lean(),
     loadLeavesForDate(staffIds, dateStr),
     StaffProfile.find({ user_id: { $in: staffIds } }).lean(),
     OffDay.find({ staff_id: { $in: staffIds }, date: dateStr }).select("staff_id").lean(),
+    Shift.find({ staff_id: { $in: staffIds }, shift_date: dateStr }).select("staff_id").lean(),
   ]);
   const offSet = new Set(offRows.map((r) => r.staff_id.toString()));
+  const shiftSet = new Set(shiftRows.map((r) => r.staff_id.toString()));
 
   const attByStaff = Object.fromEntries(attendance.map((a) => [a.staff_id.toString(), a]));
   const profByUser = Object.fromEntries(profiles.map((p) => [p.user_id.toString(), p]));
@@ -175,8 +205,10 @@ const buildDailyRows = async ({ branchId, dateStr, page = 1, limit = 50, search 
     const leaves = leaveMap.get(id) || [];
     const leave = leaves.length ? pickLeaveForDay(leaves, dateStr) : null;
     const att = attByStaff[id] || null;
-    const status = classifyDay(dateStr, att, leave, offSet.has(id));
     const profile = profByUser[id];
+    const emp = profile?.type || "casual";
+    const hasShift = shiftSet.has(id);
+    const status = classifyDay(dateStr, att, leave, offSet.has(id), hasShift, emp);
     return {
       staff_id: profile?.staff_id || "—",
       user_id: u._id,
@@ -203,6 +235,7 @@ const countStatuses = (statuses) => {
     [STATUS.ON_LEAVE]: 0,
     [STATUS.SICK]: 0,
     [STATUS.OFF_DAY]: 0,
+    [STATUS.NOT_SCHEDULED]: 0,
   };
   for (const s of statuses) if (o[s] !== undefined) o[s] += 1;
   return o;
@@ -229,7 +262,14 @@ const buildWeeklyRows = async ({ branchId, weekStartStr, search }) => {
     dates.push(d.toISOString().slice(0, 10));
   }
 
-  let staffIds = branchId ? await listBranchWorkerIds(branchId) : (await User.find({ role: { $in: ["staff", "supervisor"] }, is_active: true }).select("_id").limit(2000).lean()).map((u) => u._id);
+  let staffIds = branchId
+    ? await listBranchWorkerIds(branchId)
+    : (
+        await User.find({ role: { $in: ["staff", "supervisor"] }, is_active: true, status: "approved" })
+          .select("_id")
+          .limit(2000)
+          .lean()
+      ).map((u) => u._id);
   const searchIds = await matchUserIdsByStaffSearch(search);
   if (searchIds !== null) {
     if (!searchIds.length) return { week_start: dates[0], week_end: dates[6], rows: [] };
@@ -271,6 +311,7 @@ const buildWeeklyRows = async ({ branchId, weekStartStr, search }) => {
   }
 
   const offMap = await loadOffDaysForRange(staffIds, dates[0], dates[6]);
+  const shiftMap = await loadShiftsForRange(staffIds, dates[0], dates[6]);
 
   const rows = [];
   for (const u of users) {
@@ -278,7 +319,9 @@ const buildWeeklyRows = async ({ branchId, weekStartStr, search }) => {
     let leaveDays = 0;
     let sickDays = 0;
     const uid = u._id.toString();
+    const emp = profByUser[uid]?.type || "casual";
     const staffLeaves = leavesByStaff.get(uid) || [];
+    const staffShifts = shiftMap.get(uid) || new Set();
     for (const ds of dates) {
       const dayLeaves = staffLeaves.filter((l) => {
         const s = new Date(l.start_date);
@@ -291,7 +334,7 @@ const buildWeeklyRows = async ({ branchId, weekStartStr, search }) => {
       const leave = dayLeaves.length ? pickLeaveForDay(dayLeaves, ds) : null;
       const att = attByStaffDate[`${uid}_${ds}`];
       const staffOff = offMap.get(uid) || new Set();
-      const st = classifyDay(ds, att, leave, staffOff.has(ds));
+      const st = classifyDay(ds, att, leave, staffOff.has(ds), staffShifts.has(ds), emp);
       if (st === STATUS.PRESENT || st === STATUS.LATE) daysWorked += 1;
       if (st === STATUS.ON_LEAVE) leaveDays += 1;
       if (st === STATUS.SICK) sickDays += 1;
@@ -320,7 +363,9 @@ const buildMonthlyRows = async ({ branchId, month, year, search }) => {
   const startStr = start.toISOString().slice(0, 10);
   const endStr = end.toISOString().slice(0, 10);
 
-  let q = branchId ? branchWorkerQuery(branchId) : { role: { $in: ["staff", "supervisor"] }, is_active: true };
+  let q = branchId
+    ? branchWorkerQuery(branchId)
+    : { role: { $in: ["staff", "supervisor"] }, is_active: true, status: "approved" };
   const searchIds = await matchUserIdsByStaffSearch(search);
   if (searchIds !== null) {
     if (!searchIds.length) {
@@ -372,18 +417,23 @@ const branchDailySummary = async (branchId, dateStr) => {
   const users = await User.find(branchWorkerQuery(branchId)).select("_id").lean();
   const staffIds = users.map((u) => u._id);
   if (!staffIds.length) return { date: dateStr, branch_id: branchId, total_staff: 0, summary: countStatuses([]) };
-  const [attendance, leaveMap, offRows] = await Promise.all([
+  const [attendance, leaveMap, offRows, shiftRows, profiles] = await Promise.all([
     Attendance.find({ staff_id: { $in: staffIds }, date: dateStr }).lean(),
     loadLeavesForDate(staffIds, dateStr),
     OffDay.find({ staff_id: { $in: staffIds }, date: dateStr }).select("staff_id").lean(),
+    Shift.find({ staff_id: { $in: staffIds }, shift_date: dateStr }).select("staff_id").lean(),
+    StaffProfile.find({ user_id: { $in: staffIds } }).lean(),
   ]);
   const offSet = new Set(offRows.map((r) => r.staff_id.toString()));
+  const shiftSet = new Set(shiftRows.map((r) => r.staff_id.toString()));
+  const profByUser = Object.fromEntries(profiles.map((p) => [p.user_id.toString(), p]));
   const attByStaff = Object.fromEntries(attendance.map((a) => [a.staff_id.toString(), a]));
   const statuses = staffIds.map((id) => {
     const idStr = id.toString();
     const leaves = leaveMap.get(idStr) || [];
     const leave = leaves.length ? pickLeaveForDay(leaves, dateStr) : null;
-    return classifyDay(dateStr, attByStaff[idStr] || null, leave, offSet.has(idStr));
+    const emp = profByUser[idStr]?.type || "casual";
+    return classifyDay(dateStr, attByStaff[idStr] || null, leave, offSet.has(idStr), shiftSet.has(idStr), emp);
   });
   return {
     date: dateStr,
@@ -395,24 +445,29 @@ const branchDailySummary = async (branchId, dateStr) => {
 
 /** Full-org daily summary counts (all active staff + supervisors). */
 const globalDailySummary = async (dateStr) => {
-  const q = { role: { $in: ["staff", "supervisor"] }, is_active: true };
+  const q = { role: { $in: ["staff", "supervisor"] }, is_active: true, status: "approved" };
   const users = await User.find(q).select("_id").lean();
   const staffIds = users.map((u) => u._id);
   if (!staffIds.length) {
     return { date: dateStr, total_staff: 0, summary: countStatuses([]) };
   }
-  const [attendance, leaveMap, offRows] = await Promise.all([
+  const [attendance, leaveMap, offRows, shiftRows, profiles] = await Promise.all([
     Attendance.find({ staff_id: { $in: staffIds }, date: dateStr }).lean(),
     loadLeavesForDate(staffIds, dateStr),
     OffDay.find({ staff_id: { $in: staffIds }, date: dateStr }).select("staff_id").lean(),
+    Shift.find({ staff_id: { $in: staffIds }, shift_date: dateStr }).select("staff_id").lean(),
+    StaffProfile.find({ user_id: { $in: staffIds } }).lean(),
   ]);
   const offSet = new Set(offRows.map((r) => r.staff_id.toString()));
+  const shiftSet = new Set(shiftRows.map((r) => r.staff_id.toString()));
+  const profByUser = Object.fromEntries(profiles.map((p) => [p.user_id.toString(), p]));
   const attByStaff = Object.fromEntries(attendance.map((a) => [a.staff_id.toString(), a]));
   const statuses = staffIds.map((id) => {
     const idStr = id.toString();
     const leaves = leaveMap.get(idStr) || [];
     const leave = leaves.length ? pickLeaveForDay(leaves, dateStr) : null;
-    return classifyDay(dateStr, attByStaff[idStr] || null, leave, offSet.has(idStr));
+    const emp = profByUser[idStr]?.type || "casual";
+    return classifyDay(dateStr, attByStaff[idStr] || null, leave, offSet.has(idStr), shiftSet.has(idStr), emp);
   });
   return { date: dateStr, total_staff: staffIds.length, summary: countStatuses(statuses) };
 };
@@ -462,7 +517,9 @@ const buildPayrollPeriodRows = async ({ branchId, startStr, endStr, employmentTy
     return { period_start: startStr, period_end: endStr, total_days_in_period: 0, rows: [], summary_totals: {} };
   }
 
-  let q = branchId ? branchWorkerQuery(branchId) : { role: { $in: ["staff", "supervisor"] }, is_active: true };
+  let q = branchId
+    ? branchWorkerQuery(branchId)
+    : { role: { $in: ["staff", "supervisor"] }, is_active: true, status: "approved" };
   let users = await User.find(q).populate("branch_id", "name").sort({ name: 1 }).limit(3000).lean();
   const profiles = await StaffProfile.find({ user_id: { $in: users.map((u) => u._id) } }).lean();
   const profByUser = Object.fromEntries(profiles.map((p) => [p.user_id.toString(), p]));
@@ -485,7 +542,7 @@ const buildPayrollPeriodRows = async ({ branchId, startStr, endStr, employmentTy
   const periodStartDt = new Date(startStr + "T00:00:00.000Z");
   const periodEndDt = new Date(endStr + "T23:59:59.999Z");
 
-  const [attendance, leavesAll, offMap] = await Promise.all([
+  const [attendance, leavesAll, offMap, shiftMap] = await Promise.all([
     Attendance.find({ staff_id: { $in: staffIds }, date: { $gte: startStr, $lte: endStr } }).lean(),
     Leave.find({
       staff_id: { $in: staffIds },
@@ -494,6 +551,7 @@ const buildPayrollPeriodRows = async ({ branchId, startStr, endStr, employmentTy
       end_date: { $gte: periodStartDt },
     }).lean(),
     loadOffDaysForRange(staffIds, startStr, endStr),
+    loadShiftsForRange(staffIds, startStr, endStr),
   ]);
 
   const attByKey = {};
@@ -525,6 +583,7 @@ const buildPayrollPeriodRows = async ({ branchId, startStr, endStr, employmentTy
     const type = prof?.type || "casual";
     const staffOff = offMap.get(uid) || new Set();
     const staffLeaves = leavesByStaff.get(uid) || [];
+    const staffShifts = shiftMap.get(uid) || new Set();
 
     let days_present = 0;
     let days_absent = 0;
@@ -544,7 +603,7 @@ const buildPayrollPeriodRows = async ({ branchId, startStr, endStr, employmentTy
       });
       const leave = dayLeaves.length ? pickLeaveForDay(dayLeaves, ds) : null;
       const att = attByKey[`${uid}_${ds}`];
-      const st = classifyDay(ds, att, leave, staffOff.has(ds));
+      const st = classifyDay(ds, att, leave, staffOff.has(ds), staffShifts.has(ds), type);
       if (st === STATUS.PRESENT) days_present += 1;
       else if (st === STATUS.LATE) days_late += 1;
       else if (st === STATUS.ABSENT) days_absent += 1;
@@ -597,6 +656,26 @@ const buildPayrollPeriodRows = async ({ branchId, startStr, endStr, employmentTy
   };
 };
 
+/** One summary blob per day in month (for admin calendar). */
+const buildMonthlyCalendarSummaries = async ({ year, month, branchId }) => {
+  const start = new Date(year, month - 1, 1);
+  const end = new Date(year, month, 0);
+  const startStr = start.toISOString().slice(0, 10);
+  const endStr = end.toISOString().slice(0, 10);
+  const days = enumerateDatesInclusive(startStr, endStr);
+  const calendar = [];
+  for (const d of days) {
+    if (branchId) {
+      const s = await branchDailySummary(branchId, d);
+      calendar.push({ date: d, total_staff: s.total_staff, summary: s.summary });
+    } else {
+      const s = await globalDailySummary(d);
+      calendar.push({ date: d, total_staff: s.total_staff, summary: s.summary });
+    }
+  }
+  return { year, month, start_date: startStr, end_date: endStr, calendar };
+};
+
 module.exports = {
   STATUS,
   classifyDay,
@@ -610,7 +689,9 @@ module.exports = {
   branchWorkerQuery,
   loadLeavesForDate,
   loadOffDaysForRange,
+  loadShiftsForRange,
   enumerateDatesInclusive,
   getWeekRangeFromWeekStartStr,
   buildPayrollPeriodRows,
+  buildMonthlyCalendarSummaries,
 };

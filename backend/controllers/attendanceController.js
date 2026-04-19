@@ -5,13 +5,52 @@ const StaffProfile = require("../models/StaffProfile");
 const { isWithinGeofence } = require("../utils/geo");
 const { requiresFixedBranch } = require("../utils/branchEmployment");
 const { getTodayString } = require("../utils/dateHelpers");
-const { contractStaffMayWork } = require("../utils/contractCheck");
 const { emitAttendanceChanged } = require("../realtime");
 const { shiftStartDateTime } = require("../utils/shiftTime");
 const shiftService = require("../services/shiftService");
 const Notification = require("../models/Notification");
 const SecurityEvent = require("../models/SecurityEvent");
 const ForceClockRequest = require("../models/ForceClockRequest");
+const { logAttendanceEvent } = require("../utils/attendanceClock");
+
+async function persistClockIn({ staffId, branchOid, today, now, locIn, shiftStart, status, lateMinutes, source }) {
+  const payload = {
+    clock_in: now,
+    branch_id: branchOid,
+    location_in: locIn,
+    shift_start: shiftStart,
+    status,
+    late_minutes: lateMinutes,
+    is_supervisor_entry: false,
+    source: source || "self",
+  };
+  const existing = await Attendance.findOne({ staff_id: staffId, date: today });
+  try {
+    if (existing?._id) {
+      const doc = await Attendance.findByIdAndUpdate(existing._id, payload, { new: true });
+      logAttendanceEvent("clock_in_update", { staff_id: String(staffId), date: today, branch_id: String(branchOid) });
+      return doc;
+    }
+    const doc = await Attendance.create({
+      staff_id: staffId,
+      branch_id: branchOid,
+      date: today,
+      ...payload,
+    });
+    logAttendanceEvent("clock_in_create", { staff_id: String(staffId), date: today, branch_id: String(branchOid) });
+    return doc;
+  } catch (err) {
+    if (err.code === 11000) {
+      const again = await Attendance.findOne({ staff_id: staffId, date: today });
+      if (again) {
+        const doc = await Attendance.findByIdAndUpdate(again._id, payload, { new: true });
+        logAttendanceEvent("clock_in_retry", { staff_id: String(staffId), date: today });
+        return doc;
+      }
+    }
+    throw err;
+  }
+}
 
 exports.clockIn = async (req, res) => {
   try {
@@ -22,13 +61,16 @@ exports.clockIn = async (req, res) => {
       return res.status(400).json({ success: false, message: "GPS coordinates required." });
     }
 
-    const contractOk = await contractStaffMayWork(staffId);
-    if (!contractOk.ok) {
-      return res.status(403).json({ success: false, message: contractOk.message });
-    }
-
     const user = await User.findById(staffId).populate("branch_id");
     if (!user) return res.status(404).json({ success: false, message: "User not found." });
+
+    if (user.status !== "approved" || !user.is_active) {
+      return res.status(403).json({ success: false, message: "Only approved, active accounts can clock in." });
+    }
+
+    if (!["staff", "supervisor"].includes(user.role)) {
+      return res.status(403).json({ success: false, message: "Clock-in is only available for staff roles." });
+    }
 
     if (["staff", "supervisor"].includes(user.role) && !user.employment_type) {
       const sp = await StaffProfile.findOne({ user_id: staffId });
@@ -58,8 +100,11 @@ exports.clockIn = async (req, res) => {
 
     const branch = user.branch_id;
     const { withinFence, distance } = isWithinGeofence(
-      parseFloat(latitude), parseFloat(longitude),
-      branch.latitude, branch.longitude, branch.radius_meters
+      parseFloat(latitude),
+      parseFloat(longitude),
+      branch.latitude,
+      branch.longitude,
+      branch.radius_meters
     );
 
     if (!withinFence) {
@@ -78,7 +123,6 @@ exports.clockIn = async (req, res) => {
 
     const now = new Date();
     const scheduled = await shiftService.getClockWindowForToday(staffId, today);
-    const allowUnscheduled = process.env.ALLOW_UNSCHEDULED_CLOCK_IN === "true";
 
     let shiftStart;
     let status;
@@ -87,19 +131,13 @@ exports.clockIn = async (req, res) => {
     if (scheduled) {
       shiftStart = shiftStartDateTime(scheduled.shift_date, scheduled.start_time);
       if (!shiftStart) {
-        return res.status(500).json({ success: false, message: "Invalid shift configuration." });
+        shiftStart = new Date(now);
+        status = "present";
+      } else {
+        lateMinutes = Math.max(0, Math.floor((now.getTime() - shiftStart.getTime()) / 60000));
+        status = lateMinutes > 0 ? "late" : "present";
       }
-      const windowMin = Number(branch.clock_in_window_minutes || 60);
-      const deadline = new Date(shiftStart.getTime() + Math.max(10, windowMin) * 60 * 1000);
-      if (now < shiftStart || now > deadline) {
-        return res.status(400).json({
-          success: false,
-          message: `Clock-in is only allowed from ${scheduled.start_time} until ${Math.max(10, windowMin)} minute(s) after shift start.`,
-        });
-      }
-      lateMinutes = Math.max(0, Math.floor((now.getTime() - shiftStart.getTime()) / 60000));
-      status = lateMinutes > 0 ? "late" : "present";
-    } else if (allowUnscheduled) {
+    } else {
       shiftStart = new Date(now);
       const dst = String(branch.default_shift_start_time || "08:00");
       const m = dst.match(/^(\d{1,2}):(\d{2})$/);
@@ -107,39 +145,22 @@ exports.clockIn = async (req, res) => {
       const mm = m ? Math.min(59, Math.max(0, parseInt(m[2], 10))) : 0;
       shiftStart.setHours(hh, mm, 0, 0);
       status = "unscheduled";
-    } else {
-      return res.status(403).json({
-        success: false,
-        message: "No scheduled shift for today. Contact your supervisor to assign a shift.",
-      });
     }
-    const locIn = { latitude: parseFloat(latitude), longitude: parseFloat(longitude) };
 
+    const locIn = { latitude: parseFloat(latitude), longitude: parseFloat(longitude) };
     const branchOid = branch._id || branch;
 
-    const attendance = existing
-      ? await Attendance.findByIdAndUpdate(existing._id,
-          {
-            clock_in: now,
-            branch_id: branchOid,
-            location_in: locIn,
-            shift_start: shiftStart,
-            status,
-            late_minutes: lateMinutes,
-            is_supervisor_entry: false,
-          },
-          { new: true })
-      : await Attendance.create({
-          staff_id: staffId,
-          branch_id: branchOid,
-          date: today,
-          clock_in: now,
-          location_in: locIn,
-          shift_start: shiftStart,
-          status,
-          late_minutes: lateMinutes,
-          is_supervisor_entry: false,
-        });
+    const attendance = await persistClockIn({
+      staffId,
+      branchOid,
+      today,
+      now,
+      locIn,
+      shiftStart,
+      status,
+      lateMinutes,
+      source: "self",
+    });
 
     if (status === "late") {
       const escalatedUsers = await User.find({
@@ -199,26 +220,30 @@ exports.clockOut = async (req, res) => {
       return res.status(400).json({ success: false, message: "GPS coordinates required." });
     }
 
-    const contractOk = await contractStaffMayWork(staffId);
-    if (!contractOk.ok) {
-      return res.status(403).json({ success: false, message: contractOk.message });
+    const user = await User.findById(staffId).populate("branch_id");
+    if (!user) return res.status(404).json({ success: false, message: "User not found." });
+    if (user.status !== "approved" || !user.is_active) {
+      return res.status(403).json({ success: false, message: "Only approved, active accounts can clock out." });
     }
 
-    const user = await User.findById(staffId).populate("branch_id");
     if (!user.branch_id) {
       return res.status(400).json({ success: false, message: "Not assigned to a branch." });
     }
     const branchOid = user.branch_id._id || user.branch_id;
 
     const { withinFence, distance } = isWithinGeofence(
-      parseFloat(latitude), parseFloat(longitude),
-      user.branch_id.latitude, user.branch_id.longitude, user.branch_id.radius_meters
+      parseFloat(latitude),
+      parseFloat(longitude),
+      user.branch_id.latitude,
+      user.branch_id.longitude,
+      user.branch_id.radius_meters
     );
 
     if (!withinFence) {
       return res.status(400).json({
         success: false,
         message: `You are ${distance}m away. Must be within ${user.branch_id.radius_meters}m to clock out.`,
+        distance,
       });
     }
 
@@ -236,6 +261,7 @@ exports.clockOut = async (req, res) => {
     attendance.location_out = { latitude: parseFloat(latitude), longitude: parseFloat(longitude) };
     if (!attendance.branch_id) attendance.branch_id = branchOid;
     await attendance.save();
+    logAttendanceEvent("clock_out", { staff_id: String(staffId), date: today, branch_id: String(branchOid) });
 
     emitAttendanceChanged({ branch_id: user.branch_id._id || user.branch_id, date: today });
 
@@ -270,10 +296,10 @@ exports.getHistory = async (req, res) => {
 
     const summary = {
       total_days: records.length,
-      present: records.filter(r => r.status === "present").length,
-      late: records.filter(r => r.status === "late").length,
-      forced: records.filter(r => r.status === "forced" || r.is_forced).length,
-      on_leave: records.filter(r => r.status === "leave").length,
+      present: records.filter((r) => r.status === "present").length,
+      late: records.filter((r) => r.status === "late").length,
+      forced: records.filter((r) => r.status === "forced" || r.is_forced).length,
+      on_leave: records.filter((r) => r.status === "leave").length,
     };
 
     res.json({ success: true, data: records, summary });

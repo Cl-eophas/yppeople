@@ -144,82 +144,82 @@ exports.updateProfile = async (req, res) => {
       });
     }
 
-    const lockedKeys = ["idNumber", "kraPin", "nssf", "nhif", "name"];
-    for (const k of lockedKeys) {
-      if (req.body[k] === undefined) continue;
-      const incoming = String(req.body[k] || "").trim();
-      const cur = k === "kraPin" ? String(user[k] || "").trim().toUpperCase() : String(user[k] || "").trim();
-      const cmp = k === "kraPin" ? incoming.toUpperCase() : incoming;
-      if (cmp !== cur) {
-        return res.status(400).json({
-          success: false,
-          message: "ID number, tax identifiers, and legal name cannot be changed here. Contact HR.",
-        });
-      }
-    }
+    const {
+      fullName,
+      idNumber,
+      kraPin,
+      nssf,
+      nhif,
+      accountNumber,
+      bankName,
+      bankBranch,
+      email,
+      phone,
+    } = req.body;
 
-    const { email, phone, accountNumber, bankName, bankBranch } = req.body;
     if (
-      email === undefined &&
-      phone === undefined &&
+      fullName === undefined &&
+      idNumber === undefined &&
+      kraPin === undefined &&
+      nssf === undefined &&
+      nhif === undefined &&
       accountNumber === undefined &&
       bankName === undefined &&
-      bankBranch === undefined
+      bankBranch === undefined &&
+      email === undefined &&
+      phone === undefined
     ) {
-      return res.status(400).json({ success: false, message: "No updatable fields provided." });
+      return res.status(400).json({ success: false, message: "No fields to update." });
     }
 
-    const nextEmail = email !== undefined ? String(email).trim().toLowerCase() : user.email;
-    const nextPhone = phone !== undefined ? String(phone).trim() : user.phone;
-    const nextAcct = accountNumber !== undefined ? String(accountNumber).trim() : String(user.bank?.accountNumber || "");
-    const nextBankName = bankName !== undefined ? String(bankName).trim() : String(user.bank?.bankName || "");
-    const nextBankBranch = bankBranch !== undefined ? String(bankBranch).trim() : String(user.bank?.branch || "");
-
-    if (email !== undefined && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(nextEmail)) {
-      return res.status(400).json({ success: false, message: "Invalid email address." });
+    if (fullName !== undefined) user.name = String(fullName).trim();
+    if (idNumber !== undefined) {
+      if (!/^[0-9]{7,8}$/.test(String(idNumber).trim())) {
+        return res.status(400).json({ success: false, message: "Invalid ID number." });
+      }
+      user.idNumber = String(idNumber).trim();
     }
-    if (phone !== undefined && !PHONE_REGEX.test(nextPhone)) {
-      return res.status(400).json({ success: false, message: "Invalid phone number format." });
+    if (kraPin !== undefined) {
+      const k = String(kraPin).trim().toUpperCase();
+      if (!KRA_PIN_REGEX.test(k)) return res.status(400).json({ success: false, message: "Invalid KRA PIN." });
+      user.kraPin = k;
+    }
+    if (nssf !== undefined) user.nssf = String(nssf).trim();
+    if (nhif !== undefined) user.nhif = String(nhif).trim();
+    if (email !== undefined) {
+      const nextEmail = String(email).trim().toLowerCase();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(nextEmail)) {
+        return res.status(400).json({ success: false, message: "Invalid email address." });
+      }
+      if (nextEmail !== user.email) {
+        const taken = await User.findOne({ email: nextEmail, _id: { $ne: user._id }, deleted_at: null }).select("_id").lean();
+        if (taken) return res.status(400).json({ success: false, message: "That email is already in use." });
+      }
+      user.email = nextEmail;
+    }
+    if (phone !== undefined) {
+      if (!PHONE_REGEX.test(String(phone).trim())) {
+        return res.status(400).json({ success: false, message: "Invalid phone number format." });
+      }
+      user.phone = String(phone).trim();
     }
 
-    const prevEmail = user.email;
-    const prevPhone = user.phone;
     const prevBank = user.bank || {};
-    const bankChanged =
-      String(prevBank.accountNumber || "").trim() !== nextAcct ||
-      String(prevBank.bankName || "").trim() !== nextBankName ||
-      String(prevBank.branch || "").trim() !== nextBankBranch;
-    const emailChanged = email !== undefined && nextEmail !== prevEmail;
-    const phoneChanged = phone !== undefined && nextPhone !== prevPhone;
-
-    if (!emailChanged && !phoneChanged && !bankChanged) {
-      return res.status(400).json({ success: false, message: "Nothing to update." });
-    }
-
-    if (bankChanged) {
-      if (nextAcct.length < 6 || nextBankName.length < 2 || nextBankBranch.length < 2) {
+    if (accountNumber !== undefined || bankName !== undefined || bankBranch !== undefined) {
+      const nextAcct = accountNumber !== undefined ? String(accountNumber).trim() : String(prevBank.accountNumber || "");
+      const nextBn = bankName !== undefined ? String(bankName).trim() : String(prevBank.bankName || "");
+      const nextBr = bankBranch !== undefined ? String(bankBranch).trim() : String(prevBank.branch || "");
+      if (nextAcct.length < 6 || nextBn.length < 2 || nextBr.length < 2) {
         return res.status(400).json({
           success: false,
-          message: "Bank name, branch, and a valid account number are required when updating bank details.",
+          message: "Bank name, branch, and account number (min 6 chars) are required when updating bank details.",
         });
       }
-    }
-
-    if (email !== undefined && nextEmail !== user.email) {
-      const taken = await User.findOne({ email: nextEmail, _id: { $ne: user._id }, deleted_at: null }).select("_id").lean();
-      if (taken) {
-        return res.status(400).json({ success: false, message: "That email is already in use." });
-      }
-    }
-
-    if (email !== undefined) user.email = nextEmail;
-    if (phone !== undefined) user.phone = nextPhone;
-    if (bankChanged) {
       user.bank = {
         ...prevBank,
         accountNumber: nextAcct,
-        bankName: nextBankName,
-        branch: nextBankBranch,
+        bankName: nextBn,
+        branch: nextBr,
         isVerified: false,
         isActive: false,
       };
@@ -229,23 +229,24 @@ exports.updateProfile = async (req, res) => {
     user.isVerified = false;
     user.verification_rejection_reason = null;
     await user.save();
-    await notifyAdmins({
-      type: "approval",
-      message: `${user.name} updated contact or bank details; verification set to pending.`,
-    });
-    await Notification.create({
-      user_id: user._id,
-      type: "info",
-      message: "Your profile changes were saved and are pending admin verification.",
-    });
 
     if (phone !== undefined) {
       await StaffProfile.findOneAndUpdate(
         { user_id: user._id },
-        { $set: { phone: nextPhone } },
+        { $set: { phone: String(phone).trim() } },
         { upsert: true }
       );
     }
+
+    await notifyAdmins({
+      type: "approval",
+      message: `${user.name} updated HR profile; verification set to pending for admin review.`,
+    });
+    await Notification.create({
+      user_id: user._id,
+      type: "info",
+      message: "Your profile was updated and is pending admin verification.",
+    });
 
     return res.json({
       success: true,

@@ -8,7 +8,6 @@ const ForceClockRequest = require("../models/ForceClockRequest");
 const ForceClockOutRequest = require("../models/ForceClockOutRequest");
 const AuditLog = require("../models/AuditLog");
 const { getTodayString } = require("../utils/dateHelpers");
-const { contractStaffMayWork } = require("../utils/contractCheck");
 const { emitAttendanceChanged } = require("../realtime");
 const getIP = (req) => req.ip || req.headers["x-forwarded-for"]?.split(",")[0] || "unknown";
 const getUA = (req) => req.headers["user-agent"] || "unknown";
@@ -162,15 +161,17 @@ exports.manualClockIn = async (req, res) => {
     if (!staffUser) {
       return res.status(403).json({ success: false, message: "Staff not in your branch." });
     }
-    if (!staffUser.branch_id) {
-      return res.status(400).json({
-        success: false,
-        message: "Staff member has no branch on file; manual attendance entry is blocked.",
-      });
+    if (staffUser.status !== "approved" || !staffUser.is_active) {
+      return res.status(403).json({ success: false, message: "Staff account is not approved or active." });
     }
 
-    const contractOk = await contractStaffMayWork(staff_id);
-    if (!contractOk.ok) return res.status(403).json({ success: false, message: contractOk.message });
+    const branchForAtt = staffUser.branch_id || req.user.branch_id;
+    if (!branchForAtt) {
+      return res.status(400).json({
+        success: false,
+        message: "No branch context for attendance record. Assign staff to a branch or set supervisor branch.",
+      });
+    }
 
     const today = getTodayString();
     const existing = await Attendance.findOne({ staff_id, date: today });
@@ -187,22 +188,24 @@ exports.manualClockIn = async (req, res) => {
           existing._id,
           {
             clock_in: now,
-            branch_id: staffUser.branch_id,
+            branch_id: branchForAtt,
             shift_start: shiftStart,
             status: "supervisor_assisted",
             is_supervisor_entry: true,
+            source: "supervisor",
             notes: reason,
           },
           { new: true }
         )
       : await Attendance.create({
           staff_id,
-          branch_id: staffUser.branch_id,
+          branch_id: branchForAtt,
           date: today,
           clock_in: now,
           shift_start: shiftStart,
           status: "supervisor_assisted",
           is_supervisor_entry: true,
+          source: "supervisor",
           notes: reason,
         });
 
@@ -220,7 +223,7 @@ exports.manualClockIn = async (req, res) => {
       { staff_id, date: today, reason }
     );
 
-    if (staffUser.branch_id) emitAttendanceChanged({ branch_id: staffUser.branch_id, date: today });
+    emitAttendanceChanged({ branch_id: branchForAtt, date: today });
 
     res.json({ success: true, message: "Manual clock-in recorded.", data: record });
   } catch (err) {
@@ -604,6 +607,23 @@ exports.getLateStaff = async (req, res) => {
     return res.json({ success: true, data, count: data.length });
   } catch (err) {
     console.error("[getLateStaff]", err);
+    return res.status(500).json({ success: false, message: "Server error." });
+  }
+};
+
+const shiftService = require("../services/shiftService");
+
+exports.setWeeklyShifts = async (req, res) => {
+  try {
+    const { entries } = req.body;
+    if (!Array.isArray(entries) || !entries.length) {
+      return res.status(400).json({ success: false, message: "entries array is required." });
+    }
+    const r = await shiftService.setWeeklyShifts({ actor: req.user, entries });
+    if (!r.ok) return res.status(r.code || 400).json({ success: false, message: r.message || "Failed." });
+    return res.json({ success: true, message: "Weekly shifts saved.", data: r.results });
+  } catch (err) {
+    console.error("[setWeeklyShifts]", err);
     return res.status(500).json({ success: false, message: "Server error." });
   }
 };

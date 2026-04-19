@@ -2003,9 +2003,132 @@ exports.updateStaffProfileType = async (req, res) => {
 };
 
 // ─── Attendance (Admin) ───────────────────────────────────────────
+const {
+  buildDailyRows,
+  buildPayrollPeriodRows,
+  globalDailySummary,
+  branchDailySummary,
+  buildMonthlyCalendarSummaries,
+  getWeekRangeFromWeekStartStr,
+} = require("../utils/attendanceAnalytics");
+
 exports.getAllAttendance = async (req, res) => {
   try {
-    const { date, branch_id, staff_id, status, search } = req.query;
+    const {
+      type,
+      date,
+      week_start,
+      month,
+      year,
+      branch_id,
+      staff_id,
+      status,
+      search,
+      employment_type,
+    } = req.query;
+
+    if (type === "daily" && date) {
+      const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+      const limit = Math.min(500, Math.max(1, parseInt(req.query.limit, 10) || 200));
+      const bid = branch_id || null;
+      const out = await buildDailyRows({
+        branchId: bid,
+        dateStr: date,
+        page,
+        limit,
+        search,
+      });
+      return res.json({
+        success: true,
+        type: "daily",
+        date,
+        branch_id: bid,
+        data: out.rows,
+        summary: out.summary,
+        total: out.total,
+        page: out.page,
+        limit: out.limit,
+        calendar_day: { date, summary: out.summary },
+      });
+    }
+
+    if (type === "weekly" && week_start) {
+      const { week_start: ws, week_end: we, dates } = getWeekRangeFromWeekStartStr(week_start);
+      const bid = branch_id || null;
+      let query = { date: { $gte: ws, $lte: we } };
+      if (staff_id) query.staff_id = staff_id;
+      let records = await Attendance.find(query)
+        .populate("staff_id", "name branch_id employment_type")
+        .sort({ date: 1 })
+        .limit(5000)
+        .lean();
+      if (branch_id) records = records.filter((r) => r.staff_id?.branch_id?.toString() === branch_id);
+      if (search && String(search).trim()) {
+        const ids = await matchUserIdsByStaffSearch(search);
+        if (!ids.length) records = [];
+        else records = records.filter((r) => ids.some((id) => id.toString() === r.staff_id?._id?.toString()));
+      }
+      const weekSummaries = [];
+      for (const d of dates) {
+        const s = bid ? await branchDailySummary(bid, d) : await globalDailySummary(d);
+        weekSummaries.push({ date: d, summary: s.summary, total_staff: s.total_staff });
+      }
+      return res.json({
+        success: true,
+        type: "weekly",
+        week_start: ws,
+        week_end: we,
+        branch_id: bid,
+        calendar: weekSummaries,
+        data: records,
+        count: records.length,
+      });
+    }
+
+    if (type === "monthly" && month && year) {
+      const y = parseInt(year, 10);
+      const m = parseInt(month, 10);
+      const bid = branch_id || null;
+      const { startStr, endStr } = (() => {
+        const start = new Date(y, m - 1, 1);
+        const end = new Date(y, m, 0);
+        return { startStr: start.toISOString().slice(0, 10), endStr: end.toISOString().slice(0, 10) };
+      })();
+      let query = { date: { $gte: startStr, $lte: endStr } };
+      if (staff_id) query.staff_id = staff_id;
+      let records = await Attendance.find(query)
+        .populate("staff_id", "name branch_id")
+        .sort({ date: 1 })
+        .limit(20000)
+        .lean();
+      if (branch_id) records = records.filter((r) => r.staff_id?.branch_id?.toString() === branch_id);
+      if (search && String(search).trim()) {
+        const ids = await matchUserIdsByStaffSearch(search);
+        if (!ids.length) records = [];
+        else records = records.filter((r) => ids.some((id) => id.toString() === r.staff_id?._id?.toString()));
+      }
+      const payroll = await buildPayrollPeriodRows({
+        branchId: bid,
+        startStr,
+        endStr,
+        employmentTypeFilter: employment_type && employment_type !== "all" ? employment_type : null,
+      });
+      const cal = await buildMonthlyCalendarSummaries({ year: y, month: m, branchId: bid });
+      return res.json({
+        success: true,
+        type: "monthly",
+        year: y,
+        month: m,
+        start_date: startStr,
+        end_date: endStr,
+        branch_id: bid,
+        calendar: cal.calendar,
+        payroll_summary: payroll,
+        data: records,
+        count: records.length,
+      });
+    }
+
     const query = {};
     if (date) query.date = date;
     if (status) query.status = status;
@@ -2044,6 +2167,7 @@ exports.getAllAttendance = async (req, res) => {
     if (branch_id) records = records.filter((r) => r.staff_id?.branch_id?.toString() === branch_id);
     res.json({ success: true, data: records, count: records.length });
   } catch (err) {
+    console.error("[getAllAttendance]", err);
     res.status(500).json({ success: false, message: "Server error." });
   }
 };
@@ -2333,6 +2457,100 @@ exports.revokeUserSessions = async (req, res) => {
 
 // ─── Attendance CSV export (payroll-oriented) ─────────────────────
 const COUNTABLE_ATT = ["present", "late", "forced", "supervisor_assisted"];
+
+exports.exportAttendanceCalendar = async (req, res) => {
+  try {
+    const { type, date, week_start, month, year, branch_id, format = "csv", employment_type } = req.query;
+    const bid = branch_id || null;
+    const emp = employment_type && employment_type !== "all" ? employment_type : null;
+    let startStr;
+    let endStr;
+    if (type === "daily" && date) {
+      startStr = endStr = date;
+    } else if (type === "weekly" && week_start) {
+      const { week_start: ws, week_end: we } = getWeekRangeFromWeekStartStr(week_start);
+      startStr = ws;
+      endStr = we;
+    } else if (type === "monthly" && month && year) {
+      const y = parseInt(year, 10);
+      const m = parseInt(month, 10);
+      const start = new Date(y, m - 1, 1);
+      const end = new Date(y, m, 0);
+      startStr = start.toISOString().slice(0, 10);
+      endStr = end.toISOString().slice(0, 10);
+    } else {
+      return res.status(400).json({ success: false, message: "Invalid type or date parameters." });
+    }
+
+    const payroll = await buildPayrollPeriodRows({
+      branchId: bid,
+      startStr,
+      endStr,
+      employmentTypeFilter: emp,
+    });
+
+    const rows = payroll.rows || [];
+    if (format === "xlsx") {
+      const XLSX = require("xlsx");
+      const sheet = XLSX.utils.json_to_sheet(
+        rows.length
+          ? rows
+          : [{ message: "No rows for this period" }]
+      );
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, sheet, "Attendance");
+      const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      res.setHeader("Content-Disposition", `attachment; filename="attendance-${type}-${startStr}.xlsx"`);
+      return res.send(buf);
+    }
+
+    const esc = (v) => {
+      const s = v == null ? "" : String(v);
+      if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+      return s;
+    };
+    const headers = [
+      "staff_id",
+      "name",
+      "branch",
+      "employment_type",
+      "days_present",
+      "days_absent",
+      "days_late",
+      "leave_days",
+      "off_days",
+      "sick_days",
+      "paid_days",
+    ];
+    const lines = [headers.join(",")];
+    for (const r of rows) {
+      lines.push(
+        [
+          r.staff_id,
+          r.name,
+          r.branch,
+          r.employment_type,
+          r.days_present,
+          r.days_absent,
+          r.days_late,
+          r.leave_days,
+          r.off_days,
+          r.sick_days,
+          r.paid_days ?? "",
+        ]
+          .map(esc)
+          .join(",")
+      );
+    }
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="attendance-${type}-${startStr}.csv"`);
+    return res.send(`\ufeff${lines.join("\r\n")}`);
+  } catch (err) {
+    console.error("[exportAttendanceCalendar]", err);
+    return res.status(500).json({ success: false, message: "Server error." });
+  }
+};
 
 exports.exportAttendance = async (req, res) => {
   try {

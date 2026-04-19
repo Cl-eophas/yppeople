@@ -24,6 +24,11 @@ async function assertStaffInBranch(staffId, branchId) {
   if (!staff?.is_active) return { ok: false, code: 404, message: "Staff user not found or inactive." };
   if (!["staff", "supervisor"].includes(staff.role))
     return { ok: false, code: 400, message: "Shifts can only be assigned to staff or supervisors." };
+  const profile = await StaffProfile.findOne({ user_id: staffId }).select("type").lean();
+  const empType = profile?.type || "casual";
+  if (empType === "casual") {
+    return { ok: true, staff };
+  }
   if (!staff.branch_id || staff.branch_id.toString() !== branchId.toString())
     return { ok: false, code: 400, message: "Staff does not belong to the specified branch." };
   return { ok: true, staff };
@@ -274,6 +279,79 @@ function getClockWindowForToday(staffId, todayStr) {
   return Shift.findOne({ staff_id, shift_date: todayStr }).lean();
 }
 
+/**
+ * Bulk weekly planner: entries [{ staff_id, branch_id, date (YYYY-MM-DD), start_time?, is_off_day }]
+ * Supervisor assigns shifts / off-days for the week. Casual: shifts only (off days ignored).
+ */
+async function setWeeklyShifts({ actor, entries }) {
+  if (!Array.isArray(entries) || !entries.length) {
+    return { ok: false, code: 400, message: "entries must be a non-empty array." };
+  }
+  const results = [];
+  for (const row of entries) {
+    const { staff_id, branch_id, date: shiftDate, start_time, is_off_day } = row;
+    if (!staff_id || !branch_id || !shiftDate) {
+      results.push({ ok: false, error: "staff_id, branch_id, date required" });
+      continue;
+    }
+    const branchOk = assertBranchAccess(actor, branch_id);
+    if (!branchOk.ok) {
+      results.push({ ok: false, staff_id, error: branchOk.message });
+      continue;
+    }
+    const belong = await assertStaffInBranch(staff_id, branch_id);
+    if (!belong.ok) {
+      results.push({ ok: false, staff_id, error: belong.message });
+      continue;
+    }
+    const profile = await StaffProfile.findOne({ user_id: staff_id }).lean();
+    const type = profile?.type || "casual";
+
+    if (is_off_day) {
+      if (type === "casual") {
+        await Shift.deleteOne({ staff_id, shift_date: shiftDate }).catch(() => {});
+        results.push({ ok: true, staff_id, date: shiftDate, skipped: "casual off-day not stored" });
+        continue;
+      }
+      await Shift.deleteOne({ staff_id, shift_date: shiftDate }).catch(() => {});
+      await OffDay.findOneAndUpdate(
+        { staff_id, date: shiftDate },
+        { $set: { recorded_by: actor._id, note: row.note || "Weekly plan" } },
+        { upsert: true, new: true }
+      );
+      results.push({ ok: true, staff_id, date: shiftDate, off_day: true });
+      continue;
+    }
+
+    if (!start_time || !parseHm(start_time)) {
+      results.push({ ok: false, staff_id, error: "start_time required (HH:mm) when not off day" });
+      continue;
+    }
+    await OffDay.deleteOne({ staff_id, date: shiftDate }).catch(() => {});
+    const end = addShiftHours(start_time);
+    if (!end) {
+      results.push({ ok: false, staff_id, error: "Invalid start_time" });
+      continue;
+    }
+    const sh = await Shift.findOneAndUpdate(
+      { staff_id, shift_date: shiftDate },
+      {
+        $set: {
+          branch_id,
+          start_time,
+          end_time: end.end_time,
+          end_next_day: end.end_next_day,
+          assigned_by: actor._id,
+        },
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+    await sendShiftNotification(staff_id, `Shift set: ${shiftDate} ${start_time}–${end.end_time}.`);
+    results.push({ ok: true, staff_id, date: shiftDate, shift_id: sh._id });
+  }
+  return { ok: true, results };
+}
+
 module.exports = {
   assignShift,
   updateShift,
@@ -285,4 +363,5 @@ module.exports = {
   sendShiftNotification,
   weekBoundsForDate,
   countOffDaysInWeek,
+  setWeeklyShifts,
 };

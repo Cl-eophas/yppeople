@@ -21,11 +21,14 @@ const attendanceSchema = new mongoose.Schema(
     shift_start: Date,
     late_minutes: { type: Number, default: 0 },
     notes: String,
+    /** Who initiated the clock event (stored for audit; supervisor-assisted uses is_supervisor_entry). */
+    source: { type: String, enum: ["self", "supervisor"], default: "self" },
   },
   { timestamps: true }
 );
 
 attendanceSchema.index({ staff_id: 1, date: 1 }, { unique: true });
 attendanceSchema.index({ date: 1 });
+attendanceSchema.index({ date: 1, branch_id: 1 });
 
 module.exports = mongoose.model("Attendance", attendanceSchema);
