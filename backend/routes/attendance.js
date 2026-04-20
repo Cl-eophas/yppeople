@@ -49,6 +49,7 @@ router.post(
   [
     body("latitude").isFloat({ min: -90, max: 90 }),
     body("longitude").isFloat({ min: -180, max: 180 }),
+    body("accuracy").optional().isFloat({ gt: 0, max: 10000 }),
   ],
   validate,
   att.clockOut

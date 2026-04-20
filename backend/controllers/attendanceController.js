@@ -2,7 +2,7 @@
 const Attendance = require("../models/Attendance");
 const User = require("../models/User");
 const StaffProfile = require("../models/StaffProfile");
-const { haversineDistance, isWithinGeofence } = require("../utils/geo");
+const { haversineDistance } = require("../utils/geo");
 const { requiresFixedBranch } = require("../utils/branchEmployment");
 const { getTodayString } = require("../utils/dateHelpers");
 const { emitAttendanceChanged } = require("../realtime");
@@ -13,6 +13,7 @@ const SecurityEvent = require("../models/SecurityEvent");
 const ForceClockRequest = require("../models/ForceClockRequest");
 const { logAttendanceEvent } = require("../utils/attendanceClock");
 const { clientIp, checkVpnProxy } = require("../utils/networkRisk");
+const { resolveBranchForUser } = require("../utils/branchResolve");
 
 async function persistClockIn({ staffId, branchOid, today, now, locIn, shiftStart, status, lateMinutes, source }) {
   const payload = {
@@ -64,7 +65,13 @@ async function persistClockIn({ staffId, branchOid, today, now, locIn, shiftStar
 }
 
 async function evaluateGeoAndRisk({ req, user, latNum, lonNum, accNum }) {
-  const branch = user.branch || user.branch_id;
+  const branch = await resolveBranchForUser(user);
+  if (!branch) {
+    const err = new Error("No branch assigned.");
+    err.statusCode = 400;
+    err.code = "ERR_NO_BRANCH";
+    throw err;
+  }
   const branchLat = Number(branch?.branchLocation?.lat ?? branch?.latitude);
   const branchLng = Number(branch?.branchLocation?.lng ?? branch?.longitude);
   if (!Number.isFinite(branchLat) || !Number.isFinite(branchLng)) {
@@ -98,12 +105,14 @@ exports.clockInPrecheck = async (req, res) => {
         code: "ERR_LOW_GPS_ACCURACY",
       });
     }
-    const user = await User.findById(req.user._id).populate("branch_id");
+    const user = await User.findById(req.user._id).populate("branch_id").populate("branch");
     if (!user) return res.status(404).json({ success: false, message: "User not found." });
     if (user.status !== "approved" || !user.is_active) {
       return res.status(403).json({ success: false, message: "Only approved, active accounts can clock in." });
     }
-    if (!user.branch_id) return res.status(400).json({ success: false, message: "No branch assigned.", code: "ERR_NO_BRANCH" });
+    if (!user.branch_id && !user.branch) {
+      return res.status(400).json({ success: false, message: "No branch assigned.", code: "ERR_NO_BRANCH" });
+    }
     let geo;
     try {
       geo = await evaluateGeoAndRisk({ req, user, latNum, lonNum, accNum });
@@ -157,7 +166,7 @@ exports.clockIn = async (req, res) => {
       });
     }
 
-    const user = await User.findById(staffId).populate("branch_id");
+    const user = await User.findById(staffId).populate("branch_id").populate("branch");
     if (!user) return res.status(404).json({ success: false, message: "User not found." });
 
     if (user.status !== "approved" || !user.is_active) {
@@ -182,10 +191,10 @@ exports.clockIn = async (req, res) => {
       });
     }
 
-    if (requiresFixedBranch(user.employment_type) && !user.branch_id) {
+    if (requiresFixedBranch(user.employment_type) && !user.branch_id && !user.branch) {
       return res.status(400).json({ success: false, message: "Not assigned to a branch." });
     }
-    if (user.employment_type === "casual" && !user.branch_id) {
+    if (user.employment_type === "casual" && !user.branch_id && !user.branch) {
       return res.status(400).json({
         success: false,
         code: "BRANCH_REQUIRED",
@@ -194,12 +203,12 @@ exports.clockIn = async (req, res) => {
       });
     }
 
-    const branch = user.branch || user.branch_id;
+    const branch = await resolveBranchForUser(user);
+    if (!branch) {
+      return res.status(400).json({ success: false, message: "No branch assigned.", code: "ERR_NO_BRANCH" });
+    }
     const branchLat = Number(branch?.branchLocation?.lat ?? branch?.latitude);
     const branchLng = Number(branch?.branchLocation?.lng ?? branch?.longitude);
-    if (!Number.isFinite(branchLat) || !Number.isFinite(branchLng)) {
-      return res.status(400).json({ success: false, message: "Branch location is not configured.", code: "ERR_BRANCH_GEO" });
-    }
     if (!Number.isFinite(branchLat) || !Number.isFinite(branchLng)) {
       return res.status(400).json({ success: false, message: "Branch location is not configured.", code: "ERR_BRANCH_GEO" });
     }
@@ -365,6 +374,13 @@ exports.clockIn = async (req, res) => {
     });
   } catch (err) {
     console.error("[clockIn]", err);
+    if (err.statusCode && err.statusCode < 500) {
+      return res.status(err.statusCode).json({
+        success: false,
+        message: err.message,
+        ...(err.code && { code: err.code }),
+      });
+    }
     res.status(500).json({ success: false, message: "Server error." });
   }
 };
@@ -372,38 +388,56 @@ exports.clockIn = async (req, res) => {
 exports.clockOut = async (req, res) => {
   try {
     const staffId = req.user._id;
-    const { latitude, longitude } = req.body;
+    const { latitude, longitude, accuracy } = req.body;
 
     if (latitude === undefined || longitude === undefined) {
       return res.status(400).json({ success: false, message: "GPS coordinates required." });
     }
+    const latNum = parseFloat(latitude);
+    const lonNum = parseFloat(longitude);
+    const accRaw = accuracy !== undefined && accuracy !== null ? parseFloat(accuracy) : NaN;
+    const accNum = Number.isFinite(accRaw) ? accRaw : 50;
+    if (!Number.isFinite(latNum) || !Number.isFinite(lonNum)) {
+      return res.status(400).json({ success: false, message: "Invalid location payload.", code: "ERR_INVALID_COORDS" });
+    }
+    if (accNum > 500) {
+      return res.status(400).json({
+        success: false,
+        message: `Location accuracy too low (±${Math.round(accNum)}m). Move to open sky and try again.`,
+        code: "ERR_LOW_GPS_ACCURACY",
+      });
+    }
 
-    const user = await User.findById(staffId).populate("branch_id");
+    const user = await User.findById(staffId).populate("branch_id").populate("branch");
     if (!user) return res.status(404).json({ success: false, message: "User not found." });
     if (user.status !== "approved" || !user.is_active) {
       return res.status(403).json({ success: false, message: "Only approved, active accounts can clock out." });
     }
 
-    if (!user.branch_id) {
-      return res.status(400).json({ success: false, message: "Not assigned to a branch." });
+    const branch = await resolveBranchForUser(user);
+    if (!branch) {
+      return res.status(400).json({ success: false, message: "Not assigned to a branch.", code: "ERR_NO_BRANCH" });
     }
-    const branchOid = user.branch_id._id || user.branch_id;
+    const branchLat = Number(branch.branchLocation?.lat ?? branch.latitude);
+    const branchLng = Number(branch.branchLocation?.lng ?? branch.longitude);
+    if (!Number.isFinite(branchLat) || !Number.isFinite(branchLng)) {
+      return res.status(400).json({ success: false, message: "Branch location is not configured.", code: "ERR_BRANCH_GEO" });
+    }
+    const baseRadius = Number(branch.clockInRadius || branch.radius_meters || 1000);
+    const effectiveRadius = baseRadius + accNum;
+    const distance = Math.round(haversineDistance(latNum, lonNum, branchLat, branchLng));
 
-    const { withinFence, distance } = isWithinGeofence(
-      parseFloat(latitude),
-      parseFloat(longitude),
-      user.branch_id.latitude,
-      user.branch_id.longitude,
-      user.branch_id.radius_meters
-    );
-
-    if (!withinFence) {
+    if (distance > effectiveRadius) {
       return res.status(400).json({
         success: false,
-        message: `You are ${distance}m away. Must be within ${user.branch_id.radius_meters}m to clock out.`,
+        message: `You are ${distance}m away. Must be within ${Math.round(effectiveRadius)}m to clock out.`,
         distance,
+        effectiveRadius: Math.round(effectiveRadius),
+        code: "ERR_OUT_OF_RANGE",
       });
     }
+
+    const branchOid = branch._id;
 
     const today = getTodayString();
     const attendance = await Attendance.findOne({ staff_id: staffId, date: today });
@@ -421,11 +455,14 @@ exports.clockOut = async (req, res) => {
     await attendance.save();
     logAttendanceEvent("clock_out", { staff_id: String(staffId), date: today, branch_id: String(branchOid) });
 
-    emitAttendanceChanged({ branch_id: user.branch_id._id || user.branch_id, date: today });
+    emitAttendanceChanged({ branch_id: branchOid, date: today });
 
     res.json({ success: true, message: "Clocked out successfully.", data: attendance });
   } catch (err) {
     console.error("[clockOut]", err);
+    if (err.statusCode && err.statusCode < 500) {
+      return res.status(err.statusCode).json({ success: false, message: err.message, ...(err.code && { code: err.code }) });
+    }
     res.status(500).json({ success: false, message: "Server error." });
   }
 };

@@ -7,10 +7,9 @@ const getIP = (req) => req.ip || req.headers["x-forwarded-for"]?.split(",")[0] |
 const authenticate = async (req, res, next) => {
   try {
     const header = req.headers.authorization;
-    if (!header || !header.startsWith("Bearer "))
-      return res.status(401).json({ success: false, message: "No access token provided." });
-
-    const token = header.slice(7);
+    let token =
+      header && header.startsWith("Bearer ") ? header.slice(7) : req.cookies?.token || req.cookies?.access_token || null;
+    if (!token) return res.status(401).json({ success: false, message: "No access token provided." });
     let decoded;
     try {
       decoded = jwt.verify(token, process.env.JWT_SECRET);
@@ -48,10 +47,9 @@ const authenticate = async (req, res, next) => {
 const authenticateAnyStatus = async (req, res, next) => {
   try {
     const header = req.headers.authorization;
-    if (!header || !header.startsWith("Bearer "))
-      return res.status(401).json({ success: false, message: "No access token provided." });
-
-    const token = header.slice(7);
+    let token =
+      header && header.startsWith("Bearer ") ? header.slice(7) : req.cookies?.token || req.cookies?.access_token || null;
+    if (!token) return res.status(401).json({ success: false, message: "No access token provided." });
     let decoded;
     try {
       decoded = jwt.verify(token, process.env.JWT_SECRET);

@@ -793,6 +793,17 @@ async function api(method, path, body=null) {
       throw new Error('Invalid response from server');
     }
   }
+  if (r.status === 401) {
+    try {
+      localStorage.removeItem('wms_token');
+      TOKEN = '';
+      ME = null;
+    } catch (_) {}
+    if (!/\/auth\/(login|refresh|signup)/.test(url)) {
+      window.location.href = '/';
+    }
+    throw new Error(j.message || 'Session expired. Please sign in again.');
+  }
   if (!r.ok) throw new Error(j.message || 'Request failed');
   return j;
 }
@@ -1446,6 +1457,8 @@ async function doClock(dir) {
       payload.accuracy = CLOCK_GEO?.accuracy || 999;
       payload.locationName = CLOCK_GEO?.locationName || '';
       payload.deviceMeta = deviceMeta();
+    } else {
+      payload.accuracy = CLOCK_GEO?.accuracy != null ? CLOCK_GEO.accuracy : 50;
     }
     const res = await api('POST',`/attendance/clock-${dir}`,payload);
     $('clock-msg').innerHTML=`<span style="color:var(--success)">${res.message}</span>`;

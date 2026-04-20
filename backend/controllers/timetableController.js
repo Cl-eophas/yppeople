@@ -7,7 +7,8 @@ const shiftService = require("../services/shiftService");
 const tt = require("../services/timetableService");
 
 function supBranchId(req) {
-  return req.user.branch_id ? req.user.branch_id.toString() : null;
+  const b = req.user.branch_id || req.user.branch;
+  return b ? b.toString() : null;
 }
 
 // ─── Supervisor: shift templates ─────────────────────────────────
@@ -258,6 +259,13 @@ exports.saveWeekSupervisor = async (req, res) => {
       errors: errors.length ? errors : undefined,
     });
   } catch (err) {
+    if (err.code === 11000) {
+      return res.status(409).json({
+        success: false,
+        message: "Duplicate schedule entry — record already exists for this staff and week.",
+        code: "ERR_DUPLICATE_SCHEDULE",
+      });
+    }
     console.error("[timetable saveWeek]", err);
     res.status(500).json({ success: false, message: "Server error." });
   }
