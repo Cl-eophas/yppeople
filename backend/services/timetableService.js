@@ -93,7 +93,7 @@ async function materializeWeekFromSchedule({ staffId, branchId, weekStart, sched
 
     const def = await BranchShiftTemplate.findOne({
       _id: cell.shift_id,
-      branch_id,
+      branch_id: branchId,
       is_active: true,
     }).lean();
     if (!def) continue;
@@ -101,7 +101,7 @@ async function materializeWeekFromSchedule({ staffId, branchId, weekStart, sched
     const endNext = computeEndNextDay(def.start_time, def.end_time);
     await Shift.create({
       staff_id: staffId,
-      branch_id,
+      branch_id: branchId,
       shift_date: dateStr,
       start_time: def.start_time,
       end_time: def.end_time,
@@ -118,7 +118,7 @@ async function upsertWeeklyScheduleDoc({ staffId, branchId, weekStart, schedule,
     { staff_id: staffId, week_start: weekStart },
     {
       $set: {
-        branch_id,
+        branch_id: branchId,
         schedule: norm,
         created_by: createdBy,
       },
