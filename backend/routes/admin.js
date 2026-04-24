@@ -184,8 +184,31 @@ router.patch(
   admin.setPayRate
 );
 
+router.patch(
+  "/users/:id/payment-mode",
+  guard,
+  [param("id").isMongoId(), body("payment_mode").isIn(["bank", "mpesa", "unknown"])],
+  validate,
+  admin.setPaymentMode
+);
+
 router.get("/sessions", guard, admin.getActiveSessions);
 router.delete("/sessions/:id", guard, [param("id").isMongoId()], validate, admin.revokeUserSessions);
+
+router.get("/payroll", guard, [query("month").matches(/^\d{4}-\d{2}$/), query("branch_id").optional().isMongoId(), query("role").optional().isIn(["staff", "supervisor"])], validate, admin.getMonthlyPayroll);
+router.get(
+  "/payroll/export",
+  guard,
+  exportLimiter,
+  [
+    query("month").matches(/^\d{4}-\d{2}$/),
+    query("format").optional().isIn(["csv", "xlsx"]),
+    query("branch_id").optional().isMongoId(),
+    query("role").optional().isIn(["staff", "supervisor"]),
+  ],
+  validate,
+  admin.exportMonthlyPayroll
+);
 
 router.get("/geo/search", guard, geoSearchLimiter, [query("q").trim().isLength({ min: 3, max: 200 })], validate, geo.searchPlaces);
 router.get(

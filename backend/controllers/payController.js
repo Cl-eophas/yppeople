@@ -28,7 +28,7 @@ exports.getPaySummary = async (req, res) => {
     });
     const profile = await StaffProfile.findOne({ user_id: req.user._id });
     const days_worked = records.length;
-    const rate_per_day = profile?.pay_rate || 0;
+    const rate_per_day = (Number(user.pay_rate || 0) > 0 ? Number(user.pay_rate) : Number(profile?.pay_rate || 0)) || 0;
 
     res.json({
       success: true,

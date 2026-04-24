@@ -23,6 +23,10 @@ const userSchema = new mongoose.Schema(
       isVerified: { type: Boolean, default: false },
       isActive: { type: Boolean, default: false },
     },
+    /** Daily pay rate (KES). Source of truth for payroll exports. */
+    pay_rate: { type: Number, default: 0, min: 0 },
+    /** bank | mpesa (for payroll ops/export). */
+    payment_mode: { type: String, enum: ["bank", "mpesa", "unknown"], default: "unknown" },
 
     // System / onboarding
     role: {

@@ -15,7 +15,7 @@ const attendanceSchema = new mongoose.Schema(
     auto_clocked_out: { type: Boolean, default: false },
     status: {
       type: String,
-      enum: ["present", "late", "forced", "supervisor_assisted", "absent", "leave", "unscheduled"],
+      enum: ["present", "late", "forced", "supervisor_assisted", "absent", "leave", "off", "unscheduled"],
       default: "present",
     },
     shift_start: Date,

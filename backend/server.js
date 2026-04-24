@@ -104,6 +104,7 @@ app.use((err, req, res, next) => {
 require("./jobs/autoClockOut");
 require("./jobs/rollupAttendanceCache");
 require("./jobs/attendanceReportCron").scheduleReportCrons();
+require("./jobs/attendanceIntegrityCron").scheduleIntegrityCron();
 
 const mongoUri = process.env.MONGODB_URI || process.env.MONGO_URI || "mongodb://localhost:27017/wms_db";
 
