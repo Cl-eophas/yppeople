@@ -691,15 +691,34 @@ nav{flex:1;padding:6px 0;}
 
 <!-- Set pay rate -->
 <div id="m-pay" class="overlay" style="display:none;">
-  <div class="modal">
-    <div class="modal-title">Set Pay Rate</div>
+  <div class="modal" style="max-width:520px;">
+    <div class="modal-title">Payroll settings (admin)</div>
     <div class="modal-sub" id="m-pay-name">—</div>
-    <div class="form-group"><label class="form-label">Daily Rate (KES)</label><input class="form-input" id="m-pay-rate" type="number" min="1" max="50000" placeholder="1500"/></div>
+    <div class="g2">
+      <div class="form-group"><label class="form-label">Rate type</label><select class="form-select" id="m-pay-rate-type"><option value="daily">Daily (KES/day)</option><option value="hourly">Hourly (KES/hr)</option></select></div>
+      <div class="form-group"><label class="form-label">Rate amount (KES)</label><input class="form-input" id="m-pay-rate" type="number" min="1" step="0.01" placeholder="800 or 72.84"/></div>
+    </div>
     <div class="form-group"><label class="form-label">Payment mode</label><select class="form-select" id="m-pay-mode"><option value="bank">Bank</option><option value="mpesa">M-Pesa</option></select></div>
-    <p style="font-size:12px;color:var(--muted);">Max KES 50,000/day. Changes >3× trigger a security flag.</p>
+    <div class="form-group"><label class="form-label">Payment number</label><input class="form-input" id="m-pay-number" placeholder="Account no. or M-Pesa no."/></div>
+    <div class="g2">
+      <div class="form-group"><label class="form-label">Punch card no.</label><input class="form-input" id="m-pay-punch" placeholder="Optional; defaults to YP ID"/></div>
+      <div class="form-group"><label class="form-label">Department</label><input class="form-input" id="m-pay-dept" placeholder="e.g. Stores"/></div>
+    </div>
+    <p style="font-size:12px;color:var(--muted);">Gross = days×daily or hours×hourly. Statutory: Housing 1.5%, NSSF 6%, SHA 2.75% (server). Changes &gt;3× on rate trigger a security flag.</p>
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="closeModal('m-pay')">Cancel</button>
-      <button class="btn btn-primary" onclick="submitPayRate()">Set Rate</button>
+      <button class="btn btn-primary" onclick="submitPayRate()">Save</button>
+    </div>
+  </div>
+</div>
+
+<div id="m-payslip" class="overlay" style="display:none;">
+  <div class="modal" style="max-width:560px;">
+    <div class="modal-title">Payslip preview</div>
+    <div class="modal-sub" id="m-payslip-sub">—</div>
+    <div id="m-payslip-body" style="font-size:13px;line-height:1.5;max-height:70vh;overflow:auto;"></div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-ghost" onclick="closeModal('m-payslip')">Close</button>
     </div>
   </div>
 </div>
@@ -1365,9 +1384,8 @@ async function loadStaffDash() {
     // Stats
     const s = d.month_summary;
     $('s-stats').innerHTML = `
-      <div class="stat"><div class="stat-lbl">Days Worked</div><div class="stat-val va">${s.days_worked}</div><div class="stat-hint">This month</div></div>
-      <div class="stat"><div class="stat-lbl">Pay Rate</div><div class="stat-val">${fkes(s.pay_rate)}</div><div class="stat-hint">Per day</div></div>
-      <div class="stat"><div class="stat-lbl">Est. Pay</div><div class="stat-val vs">${fkes(s.estimated_pay)}</div><div class="stat-hint">Before deductions</div></div>
+      <div class="stat"><div class="stat-lbl">Days Worked</div><div class="stat-val va">${s.days_worked}</div><div class="stat-hint">This month (attendance)</div></div>
+      <div class="stat"><div class="stat-lbl">Pay</div><div class="stat-val" style="font-size:13px;">Admin</div><div class="stat-hint">Rates & payslips are not shown here</div></div>
       <div class="stat"><div class="stat-lbl">Unread</div><div class="stat-val vw">${d.notifications.unread_count}</div><div class="stat-hint">Notifications</div></div>`;
 
     // Notification badge
@@ -1683,7 +1701,7 @@ async function doUploadDoc() {
 // ─ Staff: Pay / Uniform / Notifications / Profile ─────────────────
 function staffPayView() {
   return `<div id="view-s-pay" class="view">
-    <div class="page-head"><div><div class="page-title">Pay Summary</div><div class="page-sub">Estimated earnings</div></div></div>
+    <div class="page-head"><div><div class="page-title">Pay Summary</div><div class="page-sub">Attendance summary (pay is managed by admin)</div></div></div>
     <div class="page-body"><div id="pay-content"><div class="spinner"></div></div></div>
   </div>`;
 }
@@ -1692,14 +1710,11 @@ async function loadPay() {
     const res=await api('GET','/pay/summary'); const d=res.data;
     $('pay-content').innerHTML=`
       <div class="stat-grid">
-        <div class="stat"><div class="stat-lbl">Days Worked</div><div class="stat-val va">${d.days_worked}</div></div>
-        <div class="stat"><div class="stat-lbl">Rate/Day</div><div class="stat-val">${fkes(d.rate_per_day)}</div></div>
-        <div class="stat"><div class="stat-lbl">Est. Pay</div><div class="stat-val vs">${fkes(d.estimated_pay)}</div></div>
+        <div class="stat"><div class="stat-lbl">Days Worked</div><div class="stat-val va">${d.days_worked}</div><div class="stat-hint">Present-like days in period</div></div>
       </div>
       <div class="card raised">
-        <div class="card-head">Calculation</div>
-        <div style="font-size:18px;font-weight:700;">${d.days_worked} × ${fkes(d.rate_per_day)} = <span style="color:var(--success);">${fkes(d.estimated_pay)}</span></div>
-        <p style="font-size:12px;color:var(--muted);margin-top:8px;">${d.note}</p>
+        <div class="card-head">Note</div>
+        <p style="font-size:14px;color:var(--muted);margin:0;">${escHtml(d.note||'')}</p>
       </div>`;
   } catch(e){$('pay-content').innerHTML=`<p style="color:var(--danger);">${e.message}</p>`;}
 }
@@ -4538,14 +4553,18 @@ function adminPayrollView(){return `<div id="view-a-payroll" class="view">
     <div class="g2" style="margin-bottom:16px;">
       <div class="card">
         <div class="card-head">Staff pay settings</div>
-        <p style="font-size:12px;color:var(--muted);margin:0 0 10px 0;">Set daily rate and bank/M-Pesa. Use monthly report for totals; exports include full HR + payroll columns.</p>
+        <p style="font-size:12px;color:var(--muted);margin:0 0 10px 0;">Daily or hourly rate, payment details, department (for bulk). Monthly view applies Kenya deductions on the server.</p>
         <div id="a-payroll-content"><div class="spinner"></div></div>
       </div>
       <div class="card">
-        <div class="card-head">Bulk daily rate</div>
-        <p style="font-size:12px;color:var(--muted);margin:0 0 8px 0;">Paste Mongo user IDs (one per line or comma-separated), one rate for all.</p>
-        <div class="form-group"><label class="form-label">User IDs</label><textarea class="form-textarea" id="a-pay-bulk-ids" rows="4" placeholder="64-char hex ObjectIds, separated by space/comma/newline"></textarea></div>
-        <div class="form-group"><label class="form-label">Daily rate (KES)</label><input class="form-input" type="number" id="a-pay-bulk-rate" min="1" max="50000"/></div>
+        <div class="card-head">Bulk rate</div>
+        <p style="font-size:12px;color:var(--muted);margin:0 0 8px 0;">Either paste user IDs <strong>or</strong> set a department name (exact match, case-insensitive).</p>
+        <div class="form-group"><label class="form-label">User IDs (optional)</label><textarea class="form-textarea" id="a-pay-bulk-ids" rows="3" placeholder="ObjectIds, separated by space/comma/newline"></textarea></div>
+        <div class="form-group"><label class="form-label">Department (optional)</label><input class="form-input" id="a-pay-bulk-dept" placeholder="e.g. Stores"/></div>
+        <div class="g2">
+          <div class="form-group"><label class="form-label">Rate type</label><select class="form-select" id="a-pay-bulk-rate-type"><option value="daily">Daily</option><option value="hourly">Hourly</option></select></div>
+          <div class="form-group"><label class="form-label">Rate (KES)</label><input class="form-input" type="number" id="a-pay-bulk-rate" min="1" step="0.01"/></div>
+        </div>
         <button type="button" class="btn btn-primary" onclick="submitBulkPayRate()">Apply to all</button>
         <div id="a-pay-bulk-msg" style="margin-top:8px;font-size:12px;"></div>
       </div>
@@ -4564,7 +4583,11 @@ function adminPayrollView(){return `<div id="view-a-payroll" class="view">
         <label style="font-size:12px;color:var(--muted);">Type</label>
         <select class="form-select" id="a-payroll-emp" style="min-width:120px;">
           <option value="all">All</option>
-          <option value="casual">Casual</option><option value="reliever">Reliever</option><option value="contract">Contract</option><option value="supervisor">Supervisor (profile)</option>
+          <option value="casual">Casual</option><option value="reliever">Reliever</option><option value="contract">Contract</option><option value="permanent">Permanent</option><option value="supervisor">Supervisor (profile)</option>
+        </select>
+        <label style="font-size:12px;color:var(--muted);">Pay</label>
+        <select class="form-select" id="a-payroll-paymode" style="width:110px;">
+          <option value="">All</option><option value="bank">Bank</option><option value="mpesa">M-Pesa</option>
         </select>
         <button type="button" class="btn btn-primary" onclick="loadAdminPayrollMonth()">Load report</button>
         <button type="button" class="btn btn-ghost" onclick="downloadPayrollExport('csv')">CSV</button>
@@ -4591,19 +4614,23 @@ async function loadAdminPayroll(){
     }
     const tbl=staff.length===0?'<p class="empty">No staff.</p>'
       :`<div style="overflow:auto;max-height:360px;"><table class="tbl"><thead><tr>
-          <th>YP ID</th><th>Name</th><th>Branch</th><th>Mode</th><th>Rate (KES/day)</th><th>Action</th>
+          <th>YP ID</th><th>Name</th><th>Dept</th><th>Branch</th><th>Mode</th><th>Type</th><th>Rate</th><th>Action</th>
         </tr></thead><tbody>${staff.map(u=>{
           const pr=u.staff_profile; const rate=pr?.pay_rate!=null?pr.pay_rate:0; const mode=(pr?.payment_mode==='mpesa')?'mpesa':'bank';
+          const rt=(pr?.rate_type==='hourly')?'hourly':'daily';
+          const cfg=encodeURIComponent(JSON.stringify({name:u.name||'',rate,mode,rate_type:rt,payment_number:pr?.payment_number||'',punch_card_no:pr?.punch_card_no||'',department:pr?.department||''}));
           return `<tr>
           <td style="font-family:monospace;font-size:11px;font-weight:600;">${escHtml(pr?.staff_id||'—')}</td>
           <td style="font-weight:700;">${escHtml(u.name||'')}</td>
+          <td style="font-size:11px;">${escHtml(pr?.department||'—')}</td>
           <td style="font-size:12px;">${escHtml(u.branch_id?.name||'—')}</td>
           <td><select class="form-select" style="min-width:100px;" onchange="adminSetPaymentMode('${u._id}',this.value)">
             <option value="bank" ${mode==='bank'?'selected':''}>Bank</option>
             <option value="mpesa" ${mode==='mpesa'?'selected':''}>M-Pesa</option>
           </select></td>
+          <td style="font-size:11px;">${rt==='hourly'?'hr':'day'}</td>
           <td style="font-size:13px;font-weight:700;">${rate>0?escHtml(String(rate)):'—'}</td>
-          <td><button type="button" class="btn btn-primary btn-sm" onclick="openPayModal('${u._id}',${JSON.stringify(u.name||'')},${rate},'${mode}')">Set rate</button></td>
+          <td><button type="button" class="btn btn-primary btn-sm" data-id="${u._id}" data-cfg="${cfg}" onclick="openPayModalFromBtn(this)">Edit</button></td>
         </tr>`;}).join('')}</tbody></table></div>`;
     $('a-payroll-content').innerHTML=tbl;
   }catch(e){$('a-payroll-content').innerHTML=`<p style="color:var(--danger);">${escHtml(e.message||'')}</p>`;}
@@ -4613,19 +4640,32 @@ async function adminSetPaymentMode(uid,mode){
   try{ await api('PATCH',`/admin/users/${uid}/payment-mode`,{payment_mode:mode}); }catch(e){ alert(e.message); }
 }
 
-function openPayModal(id,name,curRate,mode){
-  PENDING_PAY_ID=id;
-  $('m-pay-name').textContent='Setting pay for: '+(name||'');
-  $('m-pay-rate').value=curRate>0?String(curRate):'';
-  if($('m-pay-mode')) $('m-pay-mode').value=mode==='mpesa'?'mpesa':'bank';
+function openPayModalFromBtn(btn){
+  PENDING_PAY_ID=btn.getAttribute('data-id');
+  let cfg={};
+  try{ cfg=JSON.parse(decodeURIComponent(btn.getAttribute('data-cfg')||'%7B%7D')); }catch(e){ cfg={}; }
+  $('m-pay-name').textContent='Payroll: '+(cfg.name||'');
+  $('m-pay-rate').value=cfg.rate>0?String(cfg.rate):'';
+  if($('m-pay-rate-type')) $('m-pay-rate-type').value=cfg.rate_type==='hourly'?'hourly':'daily';
+  if($('m-pay-mode')) $('m-pay-mode').value=cfg.mode==='mpesa'?'mpesa':'bank';
+  if($('m-pay-number')) $('m-pay-number').value=cfg.payment_number||'';
+  if($('m-pay-punch')) $('m-pay-punch').value=cfg.punch_card_no||'';
+  if($('m-pay-dept')) $('m-pay-dept').value=cfg.department||'';
   openModal('m-pay');
 }
 async function submitPayRate(){
   try{
     const v=parseFloat($('m-pay-rate').value);
-    if(!v||v<=0){ alert('Enter a valid daily rate.'); return; }
-    await api('PATCH',`/admin/users/${PENDING_PAY_ID}/pay-rate`,{pay_rate:v});
-    if($('m-pay-mode')) await api('PATCH',`/admin/users/${PENDING_PAY_ID}/payment-mode`,{payment_mode:$('m-pay-mode').value});
+    if(!v||v<=0){ alert('Enter a valid rate.'); return; }
+    const body={
+      pay_rate:v,
+      rate_type:$('m-pay-rate-type')?.value||'daily',
+      payment_mode:$('m-pay-mode')?.value||'bank',
+      payment_number:$('m-pay-number')?.value||'',
+      punch_card_no:$('m-pay-punch')?.value||'',
+      department:$('m-pay-dept')?.value||'',
+    };
+    await api('PUT',`/admin/users/${PENDING_PAY_ID}/rate`,body);
     closeModal('m-pay');
     loadAdminPayroll();
     if($('a-payroll-month')?.value) loadAdminPayrollMonth();
@@ -4635,14 +4675,19 @@ async function submitBulkPayRate(){
   const el=$('a-pay-bulk-msg'); if(!el) return;
   const raw=$('a-pay-bulk-ids')?.value||'';
   const r=parseFloat($('a-pay-bulk-rate')?.value);
+  const dept=($('a-pay-bulk-dept')?.value||'').trim();
+  const rate_type=$('a-pay-bulk-rate-type')?.value||'daily';
   if(!r||r<=0){ el.textContent='Enter a valid rate.'; el.style.color='var(--danger)'; return; }
   const ids=raw.split(/[\s,]+/).map(s=>s.trim()).filter(Boolean);
-  if(!ids.length){ el.textContent='Enter at least one user id.'; el.style.color='var(--danger)'; return; }
+  if(!ids.length&&!dept){ el.textContent='Enter user IDs or a department.'; el.style.color='var(--danger)'; return; }
   el.textContent='…'; el.style.color='var(--muted)';
   try{
-    const res=await api('POST','/admin/users/bulk-pay-rate',{user_ids:ids,pay_rate:r});
+    const payload={ pay_rate:r, rate_type: rate_type };
+    if(dept) payload.department=dept; else payload.user_ids=ids;
+    const res=await api('POST','/admin/users/bulk-pay-rate',payload);
     el.textContent=res.message||'Done'; el.style.color='var(--success)';
     if($('a-pay-bulk-ids')) $('a-pay-bulk-ids').value='';
+    if($('a-pay-bulk-dept')) $('a-pay-bulk-dept').value='';
     loadAdminPayroll();
     if($('a-payroll-month')?.value) loadAdminPayrollMonth();
   }catch(e){ el.textContent=e.message||'Error'; el.style.color='var(--danger)'; }
@@ -4656,29 +4701,30 @@ async function loadAdminPayrollMonth(){
     const br=$('a-payroll-branch')?.value; if(br) p.set('branch_id',br);
     const ro=$('a-payroll-role')?.value; if(ro&&ro!=='all') p.set('role',ro);
     const em=$('a-payroll-emp')?.value; if(em&&em!=='all') p.set('employment_type',em);
+    const pm=$('a-payroll-paymode')?.value; if(pm) p.set('payment_mode',pm);
     const res=await api('GET','/admin/payroll?'+p.toString());
     const d=res.data; const rows=d.rows||[];
-    const head='<thead><tr><th>Name</th><th>YP ID</th><th>Email</th><th>Phone</th><th>Role</th><th>Type</th><th>Branch</th><th>Join</th><th>ID#</th><th>KRA</th><th>NSSF</th><th>NHIF</th><th>Mode</th><th>Rate</th><th>Days</th><th>Total</th></tr></thead>';
-    const body=rows.length===0?'<tbody><tr><td colspan="16">No rows.</td></tr></tbody>'
-      :`<tbody>${rows.map(r=>`<tr>
+    const head='<thead><tr><th>Name</th><th>Punch</th><th>Dept</th><th>Type</th><th>Rate</th><th>Hrs</th><th>Days</th><th>Gross</th><th>Levy</th><th>NSSF</th><th>SHA</th><th>Net</th><th></th></tr></thead>';
+    const body=rows.length===0?'<tbody><tr><td colspan="13">No rows.</td></tr></tbody>'
+      :`<tbody>${rows.map(r=>{
+        const uid=typeof r.user_id==='object'&&r.user_id?r.user_id._id||r.user_id:r.user_id;
+        return `<tr>
         <td style="font-weight:700;">${escHtml(r.name||'')}</td>
-        <td style="font-family:monospace;font-size:11px;">${escHtml(r.yp_staff_id||'')}</td>
-        <td style="font-size:11px;">${escHtml(r.email||'—')}</td>
-        <td style="font-size:11px;">${escHtml(r.phone||'—')}</td>
-        <td>${escHtml(r.role||'—')}</td>
-        <td>${escHtml(r.employment_type||'—')}</td>
-        <td>${escHtml(r.branch||'—')}</td>
-        <td style="font-size:11px;">${escHtml(r.join_date||'—')}</td>
-        <td style="font-size:11px;">${escHtml(r.id_number||'—')}</td>
-        <td style="font-size:11px;">${escHtml(r.kra_pin||'—')}</td>
-        <td style="font-size:11px;">${escHtml(r.nssf||'—')}</td>
-        <td style="font-size:11px;">${escHtml(r.nhif||'—')}</td>
-        <td>${escHtml(r.payment_mode||'')}</td>
-        <td>${r.pay_rate!=null?escHtml(String(r.pay_rate)):'—'}</td>
+        <td style="font-family:monospace;font-size:11px;">${escHtml(r.punch_card_no||r.yp_staff_id||'')}</td>
+        <td style="font-size:11px;">${escHtml(r.department||'—')}</td>
+        <td style="font-size:11px;">${escHtml(r.rate_type||'daily')}</td>
+        <td style="font-size:11px;">${r.pay_rate!=null?escHtml(String(r.pay_rate)):'—'}</td>
+        <td>${r.total_hours_worked!=null?escHtml(String(r.total_hours_worked)):'—'}</td>
         <td><strong>${r.days_worked!=null?r.days_worked:'—'}</strong></td>
-        <td><strong style="color:var(--success);">${r.total_pay!=null?r.total_pay.toFixed(2):'—'}</strong></td>
-      </tr>`).join('')}</tbody>`;
-    box.innerHTML=`<p style="font-size:12px;margin:0 0 8px 0;">Period <strong>${escHtml(d.period_start||'')}</strong> – <strong>${escHtml(d.period_end||'')}</strong> · <strong>${rows.length}</strong> staff · grand total <strong style="color:var(--success);">${(d.grand_total_pay??0).toFixed(2)}</strong> KES</p>
+        <td>${r.gross_pay!=null?r.gross_pay:''}</td>
+        <td style="font-size:11px;">${r.housing_levy!=null?r.housing_levy:''}</td>
+        <td style="font-size:11px;">${r.nssf_statutory!=null?r.nssf_statutory:''}</td>
+        <td style="font-size:11px;">${r.sha!=null?r.sha:''}</td>
+        <td><strong style="color:var(--success);">${r.net_pay!=null?r.net_pay:''}</strong></td>
+        <td><button type="button" class="btn btn-ghost btn-sm" onclick="openPayslipPreview('${String(uid)}')">Payslip</button></td>
+      </tr>`;}).join('')}</tbody>`;
+    const co=escHtml(d.company?.name||'YP People Ltd');
+    box.innerHTML=`<p style="font-size:12px;margin:0 0 8px 0;"><strong>${co}</strong> · ${escHtml(m)} · <strong>${escHtml(d.period_start||'')}</strong> – <strong>${escHtml(d.period_end||'')}</strong> · ${rows.length} staff · gross <strong>${(d.grand_total_gross??0)}</strong> · net <strong style="color:var(--success);">${(d.grand_total_net??0)}</strong> KES</p>
     <div style="overflow:auto;max-height:480px;"><table class="tbl">${head}${body}</table></div>`;
   }catch(e){ box.innerHTML=`<p style="color:var(--danger);">${escHtml(e.message||'')}</p>`; }
 }
@@ -4688,6 +4734,7 @@ async function downloadPayrollExport(fmt){
   const br=$('a-payroll-branch')?.value; if(br) p.set('branch_id',br);
   const ro=$('a-payroll-role')?.value; if(ro&&ro!=='all') p.set('role',ro);
   const em=$('a-payroll-emp')?.value; if(em&&em!=='all') p.set('employment_type',em);
+  const pm=$('a-payroll-paymode')?.value; if(pm) p.set('payment_mode',pm);
   const url=`${API}/admin/payroll?`+p.toString();
   try{
     const r=await fetch(url,{headers:{Authorization:`Bearer ${TOKEN}`},credentials:'include'});
@@ -4699,6 +4746,37 @@ async function downloadPayrollExport(fmt){
     const ext=fmt==='xlsx'?'xlsx':'csv';
     const fn=fnMatch?fnMatch[1]:'payroll-'+m+'.'+ext;
     const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=fn; a.click(); URL.revokeObjectURL(a.href);
+  }catch(e){ alert(e.message); }
+}
+
+async function openPayslipPreview(userId){
+  const m=$('a-payroll-month')?.value;
+  if(!m){ alert('Select a month on the payroll page first.'); return; }
+  try{
+    const r=await api('GET','/admin/payroll/slip?user_id='+encodeURIComponent(userId)+'&month='+encodeURIComponent(m));
+    const d=r.data||{};
+    const p=d.payslip||{};
+    $('m-payslip-sub').textContent=(d.company?.name||'YP People Ltd')+' · '+String(d.month||m);
+    const lines=[
+      ['Employee',p.name||'—'],
+      ['Punch / card',p.punch_card_no||p.yp_staff_id||'—'],
+      ['Department',p.department||'—'],
+      ['Branch',p.branch||'—'],
+      ['Period',(d.period_start||'')+' → '+(d.period_end||'')],
+      ['Rate type',p.rate_type||'daily'],
+      ['Pay rate (KES)',p.pay_rate!=null?String(p.pay_rate):'—'],
+      ['Days worked',p.days_worked!=null?String(p.days_worked):'—'],
+      ['Total hours',p.total_hours_worked!=null?String(p.total_hours_worked):'—'],
+      ['Gross pay (KES)',p.gross_pay!=null?String(p.gross_pay):'—'],
+      ['Housing levy 1.5%',p.housing_levy!=null?String(p.housing_levy):'—'],
+      ['NSSF 6%',p.nssf_statutory!=null?String(p.nssf_statutory):'—'],
+      ['SHA 2.75%',p.sha!=null?String(p.sha):'—'],
+      ['Total deductions',p.total_deductions!=null?String(p.total_deductions):'—'],
+      ['Net pay (KES)',p.net_pay!=null?String(p.net_pay):'—'],
+      ['Pay to',(p.payment_mode||'')+' · '+(p.payment_number||'—')],
+    ];
+    $('m-payslip-body').innerHTML='<table class="tbl" style="width:100%;"><tbody>'+lines.map(([a,b])=>'<tr><td style="font-weight:600;width:42%;">'+escHtml(a)+'</td><td>'+escHtml(String(b))+'</td></tr>').join('')+'</tbody></table>';
+    openModal('m-payslip');
   }catch(e){ alert(e.message); }
 }
 

@@ -1,5 +1,4 @@
 const Attendance = require("../models/Attendance");
-const StaffProfile = require("../models/StaffProfile");
 const User = require("../models/User");
 const { isPayrollUnlocked } = require("../utils/profileVerification");
 
@@ -26,19 +25,15 @@ exports.getPaySummary = async (req, res) => {
       date: { $gte: startStr, $lte: endStr },
       status: { $in: ["present", "late", "forced", "supervisor_assisted"] },
     });
-    const profile = await StaffProfile.findOne({ user_id: req.user._id });
     const days_worked = records.length;
-    const rate_per_day = profile?.pay_rate || 0;
 
     res.json({
       success: true,
       data: {
         period: { month, year },
         days_worked,
-        rate_per_day,
-        estimated_pay: days_worked * rate_per_day,
         currency: "KES",
-        note: "Estimate based on recorded attendance and your current daily rate.",
+        note: "Attendance days only; pay rates and net pay are managed by admin.",
       },
     });
   } catch (err) {

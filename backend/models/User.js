@@ -52,10 +52,10 @@ const userSchema = new mongoose.Schema(
     branch_id: { type: mongoose.Schema.Types.ObjectId, ref: "Branch" },
     /** Canonical branch reference for new modules; mirrored with branch_id for compatibility. */
     branch: { type: mongoose.Schema.Types.ObjectId, ref: "Branch", default: null },
-    /** casual | reliever | contract | supervisor | general_supervisor */
+    /** casual | reliever | contract | permanent | supervisor | general_supervisor */
     employment_type: {
       type: String,
-      enum: ["casual", "reliever", "contract", "supervisor", "general_supervisor"],
+      enum: ["casual", "reliever", "contract", "permanent", "supervisor", "general_supervisor"],
     },
     /** Last time a casual user self-selected / changed branch (weekly limit). */
     last_branch_change: { type: Date, default: null },

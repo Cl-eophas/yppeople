@@ -29,8 +29,6 @@ exports.getDashboard = async (req, res) => {
       status: { $in: ["present", "late", "forced", "supervisor_assisted"] },
     });
     const days_worked = monthAtt.length;
-    const pay_rate = profile?.pay_rate || 0;
-    const estimated_pay = days_worked * pay_rate;
 
     const unread_count = await Notification.countDocuments({ user_id: req.user._id, is_read: false });
     const latest = await Notification.find({ user_id: req.user._id, is_read: false })
@@ -90,8 +88,6 @@ exports.getDashboard = async (req, res) => {
         },
         month_summary: {
           days_worked,
-          pay_rate,
-          estimated_pay,
         },
         leave_balances: {
           annual: balance ? parseFloat(balance.annual_balance.toFixed(2)) : 0,

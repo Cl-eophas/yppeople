@@ -12,6 +12,7 @@ const Notification = require("../models/Notification");
 const SecurityEvent = require("../models/SecurityEvent");
 const ForceClockRequest = require("../models/ForceClockRequest");
 const { logAttendanceEvent } = require("../utils/attendanceClock");
+const { syncHoursWorkedOnDocument } = require("../utils/attendanceHours");
 const { clientIp, checkVpnProxy } = require("../utils/networkRisk");
 const { resolveBranchForUser } = require("../utils/branchResolve");
 
@@ -452,6 +453,7 @@ exports.clockOut = async (req, res) => {
     attendance.clock_out = now;
     attendance.location_out = { latitude: parseFloat(latitude), longitude: parseFloat(longitude) };
     if (!attendance.branch_id) attendance.branch_id = branchOid;
+    syncHoursWorkedOnDocument(attendance);
     await attendance.save();
     logAttendanceEvent("clock_out", { staff_id: String(staffId), date: today, branch_id: String(branchOid) });
 

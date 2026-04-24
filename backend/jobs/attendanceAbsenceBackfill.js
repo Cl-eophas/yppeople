@@ -1,7 +1,8 @@
 /**
- * Daily job: for each approved staff day that had a scheduled shift but no attendance document,
- * upsert a single absent row (staff_id+date unique). Supervised/forced clock-ins are created by
- * other flows; this only fills the gap for audit / completeness.
+ * Daily at 00:30: for each approved staff day with no attendance row, upsert system row:
+ *   absent — had shift, no clock-in (weekday / scheduled)
+ *   off — no shift (not scheduled) or weekend / recorded off pattern per classifyDay
+ * Leave-covered days are skipped (leave is source of truth; no synthetic row).
  * Opt-in: ENABLE_ATTENDANCE_BACKFILL=true
  */
 const cron = require("node-cron");
@@ -16,6 +17,7 @@ const {
   loadLeavesForDate,
   pickLeaveForDay,
 } = require("../utils/attendanceAnalytics");
+const { writeSystemAudit } = require("../utils/auditSystem");
 
 async function backfillForDateStr(dateStr) {
   const q = {
@@ -24,8 +26,8 @@ async function backfillForDateStr(dateStr) {
     status: "approved",
     deleted_at: null,
   };
-  const users = await User.find(q).select("_id branch_id").lean();
-  if (!users.length) return { date: dateStr, inserted: 0 };
+  const users = await User.find(q).select("_id branch_id employment_type").lean();
+  if (!users.length) return { date: dateStr, absent: 0, off: 0 };
 
   const staffIds = users.map((u) => u._id);
   const [shiftMap, offMap, leavesMap, existing, profs] = await Promise.all([
@@ -44,16 +46,29 @@ async function backfillForDateStr(dateStr) {
   const typeBy = Object.fromEntries(profs.map((p) => [p.user_id.toString(), p.type || "casual"]));
 
   const bulk = [];
+  let absent = 0;
+  let off = 0;
+
   for (const u of users) {
     const uid = u._id.toString();
     if (hasAtt.has(uid)) continue;
     const hasShift = (shiftMap.get(uid) || new Set()).has(dateStr);
-    const off = (offMap.get(uid) || new Set()).has(dateStr);
+    const offRec = (offMap.get(uid) || new Set()).has(dateStr);
     const leaves = leavesMap.get(uid) || [];
     const leave = leaves.length ? pickLeaveForDay(leaves, dateStr) : null;
-    const emType = typeBy[uid] || "casual";
-    const st = classifyDay(dateStr, null, leave, off, hasShift, emType);
-    if (st !== STATUS.ABSENT) continue;
+    if (leave) continue;
+
+    const emType = u.employment_type === "permanent" ? "casual" : typeBy[uid] || "casual";
+    const st = classifyDay(dateStr, null, leave, offRec, hasShift, emType);
+
+    let insertStatus = null;
+    if (st === STATUS.ABSENT) insertStatus = "absent";
+    else if (st === STATUS.NOT_SCHEDULED || st === STATUS.OFF_DAY) insertStatus = "off";
+    if (!insertStatus) continue;
+
+    if (insertStatus === "absent") absent += 1;
+    else off += 1;
+
     bulk.push({
       updateOne: {
         filter: { staff_id: u._id, date: dateStr },
@@ -62,7 +77,7 @@ async function backfillForDateStr(dateStr) {
             staff_id: u._id,
             date: dateStr,
             branch_id: u.branch_id,
-            status: "absent",
+            status: insertStatus,
             source: "system",
           },
         },
@@ -71,13 +86,21 @@ async function backfillForDateStr(dateStr) {
     });
   }
 
-  if (!bulk.length) return { date: dateStr, inserted: 0 };
+  if (!bulk.length) return { date: dateStr, absent: 0, off: 0, inserted: 0 };
   const r = await Attendance.bulkWrite(bulk, { ordered: false });
-  return { date: dateStr, inserted: r.upsertedCount || 0, ops: bulk.length };
+  const inserted = r.upsertedCount || 0;
+  await writeSystemAudit("ATTENDANCE_AUTO_HEAL", null, "attendance", {
+    date: dateStr,
+    absent,
+    off,
+    inserted,
+    ops: bulk.length,
+  });
+  return { date: dateStr, absent, off, inserted, ops: bulk.length };
 }
 
 if (process.env.ENABLE_ATTENDANCE_BACKFILL === "true") {
-  cron.schedule("30 2 * * *", async () => {
+  cron.schedule("30 0 * * *", async () => {
     try {
       const d = new Date();
       d.setDate(d.getDate() - 1);

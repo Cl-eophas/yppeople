@@ -3,7 +3,8 @@ const mongoose = require("mongoose");
 const auditLogSchema = new mongoose.Schema(
   {
     action: { type: String, required: true },
-    admin_id: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+    /** Null when action is performed by a scheduled job (see metadata.performed_by). */
+    admin_id: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
     target_id: mongoose.Schema.Types.ObjectId,
     target_type: String,
     module: String,

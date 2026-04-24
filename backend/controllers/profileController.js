@@ -40,7 +40,6 @@ exports.getProfile = async (req, res) => {
         join_date: sp?.join_date,
         phone: sp?.phone || o.phone,
         address: sp?.address,
-        pay_rate: sp?.pay_rate,
         ...verificationPayload(user),
       },
     });

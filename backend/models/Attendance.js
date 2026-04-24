@@ -8,6 +8,8 @@ const attendanceSchema = new mongoose.Schema(
     date: { type: String, required: true },
     clock_in: Date,
     clock_out: Date,
+    /** Decimal hours between clock_in and clock_out (set on clock-out / auto clock-out / admin edit). */
+    hours_worked: { type: Number, default: null },
     location_in: { latitude: Number, longitude: Number },
     location_out: { latitude: Number, longitude: Number },
     is_forced: { type: Boolean, default: false },
@@ -15,7 +17,7 @@ const attendanceSchema = new mongoose.Schema(
     auto_clocked_out: { type: Boolean, default: false },
     status: {
       type: String,
-      enum: ["present", "late", "forced", "supervisor_assisted", "absent", "leave", "unscheduled"],
+      enum: ["present", "late", "forced", "supervisor_assisted", "absent", "leave", "unscheduled", "off"],
       default: "present",
     },
     shift_start: Date,

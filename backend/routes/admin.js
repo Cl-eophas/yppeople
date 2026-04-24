@@ -72,7 +72,7 @@ router.put(
   [
     param("id").isMongoId(),
     body("role").isIn(["general_supervisor", "supervisor", "staff"]),
-    body("employment_type").optional().isIn(["casual", "reliever", "contract", "supervisor", "general_supervisor"]),
+    body("employment_type").optional().isIn(["casual", "reliever", "contract", "permanent", "supervisor", "general_supervisor"]),
     body("branch_id").optional({ checkFalsy: true }).isMongoId(),
     body("branchId").optional({ checkFalsy: true }).isMongoId(),
   ],
@@ -109,7 +109,7 @@ router.post(
     body("email").isEmail().normalizeEmail(),
     body("role").isIn(["admin", "general_supervisor", "supervisor", "staff"]),
     body("branch_id").optional({ checkFalsy: true }).isMongoId(),
-    body("employment_type").optional().isIn(["casual", "reliever", "contract", "supervisor", "general_supervisor"]),
+    body("employment_type").optional().isIn(["casual", "reliever", "contract", "permanent", "supervisor", "general_supervisor"]),
   ],
   validate,
   admin.createUserByAdmin
@@ -183,6 +183,24 @@ const payRateBodyMiddleware = (req, res, next) => {
   return next();
 };
 
+const bulkPayTargetMiddleware = (req, res, next) => {
+  const hasIds = Array.isArray(req.body.user_ids) && req.body.user_ids.length > 0;
+  const hasDept = req.body.department && String(req.body.department).trim();
+  if (!hasIds && !hasDept) {
+    return res.status(400).json({ success: false, message: "user_ids or department is required." });
+  }
+  return next();
+};
+
+router.get(
+  "/payroll/slip",
+  guard,
+  exportLimiter,
+  [query("month").matches(/^\d{4}-\d{2}$/), query("user_id").isMongoId()],
+  validate,
+  admin.getPayrollSlipPreview
+);
+
 router.get(
   "/payroll",
   guard,
@@ -191,7 +209,8 @@ router.get(
     query("month").matches(/^\d{4}-\d{2}$/),
     query("branch_id").optional().isMongoId(),
     query("role").optional().isIn(["all", "staff", "supervisor"]),
-    query("employment_type").optional().isIn(["all", "casual", "reliever", "contract", "supervisor"]),
+    query("employment_type").optional().isIn(["all", "casual", "reliever", "contract", "supervisor", "permanent"]),
+    query("payment_mode").optional().isIn(["bank", "mpesa"]),
     query("format").optional().isIn(["json", "csv", "xlsx"]),
   ],
   validate,
@@ -203,8 +222,13 @@ router.put(
   guard,
   [
     param("id").isMongoId(),
-    body("pay_rate").optional().isFloat({ gt: 0, max: 50000 }),
-    body("rate").optional().isFloat({ gt: 0, max: 50000 }),
+    body("pay_rate").optional().isFloat({ gt: 0 }),
+    body("rate").optional().isFloat({ gt: 0 }),
+    body("rate_type").optional().isIn(["daily", "hourly"]),
+    body("payment_mode").optional().isIn(["bank", "mpesa"]),
+    body("payment_number").optional().trim().isLength({ max: 64 }),
+    body("punch_card_no").optional().trim().isLength({ max: 32 }),
+    body("department").optional().trim().isLength({ max: 80 }),
   ],
   validate,
   payRateBodyMiddleware,
@@ -215,12 +239,15 @@ router.post(
   "/users/bulk-pay-rate",
   guard,
   [
-    body("user_ids").isArray({ min: 1 }),
-    body("user_ids.*").isMongoId(),
-    body("pay_rate").optional().isFloat({ gt: 0, max: 50000 }),
-    body("rate").optional().isFloat({ gt: 0, max: 50000 }),
+    body("user_ids").optional().isArray(),
+    body("user_ids.*").optional().isMongoId(),
+    body("department").optional().trim().isLength({ min: 1, max: 80 }),
+    body("pay_rate").optional().isFloat({ gt: 0 }),
+    body("rate").optional().isFloat({ gt: 0 }),
+    body("rate_type").optional().isIn(["daily", "hourly"]),
   ],
   validate,
+  bulkPayTargetMiddleware,
   payRateBodyMiddleware,
   admin.bulkSetPayRate
 );
@@ -238,8 +265,13 @@ router.patch(
   guard,
   [
     param("id").isMongoId(),
-    body("rate").optional().isFloat({ gt: 0, max: 50000 }),
-    body("pay_rate").optional().isFloat({ gt: 0, max: 50000 }),
+    body("rate").optional().isFloat({ gt: 0 }),
+    body("pay_rate").optional().isFloat({ gt: 0 }),
+    body("rate_type").optional().isIn(["daily", "hourly"]),
+    body("payment_mode").optional().isIn(["bank", "mpesa"]),
+    body("payment_number").optional().trim().isLength({ max: 64 }),
+    body("punch_card_no").optional().trim().isLength({ max: 32 }),
+    body("department").optional().trim().isLength({ max: 80 }),
   ],
   validate,
   payRateBodyMiddleware,

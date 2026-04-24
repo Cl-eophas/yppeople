@@ -543,7 +543,9 @@ const buildPayrollPeriodRows = async ({ branchId, startStr, endStr, employmentTy
   const profiles = await StaffProfile.find({ user_id: { $in: users.map((u) => u._id) } }).lean();
   const profByUser = Object.fromEntries(profiles.map((p) => [p.user_id.toString(), p]));
 
-  if (employmentTypeFilter && ["casual", "reliever", "contract", "supervisor"].includes(employmentTypeFilter)) {
+  if (employmentTypeFilter === "permanent") {
+    users = users.filter((u) => u.employment_type === "permanent");
+  } else if (employmentTypeFilter && ["casual", "reliever", "contract", "supervisor"].includes(employmentTypeFilter)) {
     users = users.filter((u) => (profByUser[u._id.toString()]?.type || "casual") === employmentTypeFilter);
   }
 
@@ -599,7 +601,8 @@ const buildPayrollPeriodRows = async ({ branchId, startStr, endStr, employmentTy
   for (const u of users) {
     const uid = u._id.toString();
     const prof = profByUser[uid];
-    const type = prof?.type || "casual";
+    /** Permanent staff follow casual-style day classification for attendance-based pay. */
+    const type = u.employment_type === "permanent" ? "casual" : prof?.type || "casual";
     const staffOff = offMap.get(uid) || new Set();
     const staffLeaves = leavesByStaff.get(uid) || [];
     const staffShifts = shiftMap.get(uid) || new Set();
@@ -653,7 +656,7 @@ const buildPayrollPeriodRows = async ({ branchId, startStr, endStr, employmentTy
       name: u.name,
       branch: u.branch_id?.name || "—",
       branch_id: u.branch_id?._id,
-      employment_type: type,
+      employment_type: u.employment_type === "permanent" ? "permanent" : type,
       total_days_in_period: totalDaysInPeriod,
       days_present,
       days_absent,
