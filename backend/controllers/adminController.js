@@ -33,10 +33,17 @@ const {
   staffProfileTypeFor,
   assertActiveBranch,
 } = require("../utils/branchEmployment");
+const { parsePayRateBody } = require("../utils/payrollRate");
 const promotionService = require("../services/promotionService");
 const { notifyAdmins } = require("../utils/notifyAdmins");
-const { ensureAttendanceCompleteForPeriod } = require("../services/attendanceIntegrityService");
-const { buildPayrollPeriodRows } = require("../utils/attendanceAnalytics");
+const {
+  buildDailyRows,
+  buildPayrollPeriodRows,
+  globalDailySummary,
+  branchDailySummary,
+  buildMonthlyCalendarSummaries,
+  getWeekRangeFromWeekStartStr,
+} = require("../utils/attendanceAnalytics");
 
 /** Debounce identical attendance exports per admin (month bucket) to reduce duplicate downloads. */
 const recentAttendanceExports = new Map();
@@ -192,7 +199,7 @@ exports.getAllUsers = async (req, res) => {
       const profileUserIds = users.filter((u) => ["staff", "supervisor"].includes(u.role)).map((u) => u._id);
       if (profileUserIds.length) {
         const profs = await StaffProfile.find({ user_id: { $in: profileUserIds } })
-          .select("user_id type staff_id join_date")
+          .select("user_id type staff_id join_date pay_rate payment_mode")
           .lean();
         const map = Object.fromEntries(profs.map((p) => [p.user_id.toString(), p]));
         for (const u of users) {
@@ -1645,13 +1652,251 @@ exports.deleteUser = async (req, res) => {
 };
 
 // ─── Pay Rate Management ─────────────────────────────────────────
+exports.bulkSetPayRate = async (req, res) => {
+  try {
+    const { user_ids } = req.body;
+    const parsed = parsePayRateBody(req.body);
+    if (parsed.error) return res.status(400).json({ success: false, message: parsed.error });
+    const { rate } = parsed;
+    if (!Array.isArray(user_ids) || !user_ids.length) {
+      return res.status(400).json({ success: false, message: "user_ids must be a non-empty array." });
+    }
+    const ids = user_ids
+      .slice(0, 500)
+      .map((id) => String(id))
+      .filter((id) => mongoose.isValidObjectId(id));
+    let updated = 0;
+    for (const id of ids) {
+      const profile = await StaffProfile.findOne({ user_id: id });
+      if (!profile) continue;
+      const oldRate = profile.pay_rate;
+      if (oldRate > 0 && rate > oldRate * 3) {
+        await SecurityEvent.create({
+          type: "anomalous_action",
+          user_id: req.user._id,
+          ip_address: getIP(req),
+          metadata: { note: "Abnormal pay rate increase (bulk)", old_rate: oldRate, new_rate: rate, staff_id: id },
+        });
+      }
+      profile.rate_history.push({ rate: oldRate, effective_date: new Date(), set_by: req.user._id });
+      profile.pay_rate = rate;
+      await profile.save();
+      await writeAudit("SET_PAY_RATE", req, id, "payroll", { pay_rate: oldRate, bulk: true }, { pay_rate: rate });
+      updated += 1;
+    }
+    res.json({ success: true, message: `Updated ${updated} staff profile(s).`, data: { updated, rate } });
+  } catch (err) {
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+};
+
+exports.setPaymentMode = async (req, res) => {
+  try {
+    const { payment_mode } = req.body;
+    if (!["bank", "mpesa"].includes(payment_mode)) {
+      return res.status(400).json({ success: false, message: "payment_mode must be bank or mpesa." });
+    }
+    const profile = await StaffProfile.findOne({ user_id: req.params.id });
+    if (!profile) return res.status(404).json({ success: false, message: "Staff profile not found." });
+    const before = profile.payment_mode;
+    profile.payment_mode = payment_mode;
+    await profile.save();
+    await writeAudit("SET_PAYMENT_MODE", req, req.params.id, "payroll", { payment_mode: before }, { payment_mode });
+    res.json({ success: true, message: "Payment mode updated.", data: { payment_mode } });
+  } catch (err) {
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+};
+
+/**
+ * GET /api/admin/payroll?month=YYYY-MM&branch_id=&role=&employment_type=&format=
+ * One row per staff for the month; days_worked = present + late; total_pay = days_worked * pay_rate.
+ */
+exports.getPayrollMonth = async (req, res) => {
+  try {
+    const month = String(req.query.month || "");
+    if (!/^\d{4}-\d{2}$/.test(month)) {
+      return res.status(400).json({ success: false, message: "month must be YYYY-MM." });
+    }
+    const [yStr, mStr] = month.split("-");
+    const y = parseInt(yStr, 10);
+    const mo = parseInt(mStr, 10);
+    if (mo < 1 || mo > 12) return res.status(400).json({ success: false, message: "Invalid month." });
+    const start = new Date(y, mo - 1, 1);
+    const end = new Date(y, mo, 0);
+    const startStr = start.toISOString().slice(0, 10);
+    const endStr = end.toISOString().slice(0, 10);
+    const branchId =
+      req.query.branch_id && mongoose.isValidObjectId(String(req.query.branch_id)) ? String(req.query.branch_id) : null;
+    const roleQ = req.query.role && req.query.role !== "all" ? String(req.query.role) : null;
+    const emp =
+      req.query.employment_type && req.query.employment_type !== "all" ? String(req.query.employment_type) : null;
+    if (emp && !["casual", "reliever", "contract", "supervisor"].includes(emp)) {
+      return res.status(400).json({ success: false, message: "Invalid employment_type filter." });
+    }
+    if (roleQ && !["staff", "supervisor"].includes(roleQ)) {
+      return res.status(400).json({ success: false, message: "Invalid role filter (use staff, supervisor, or all)." });
+    }
+
+    const format = (req.query.format && String(req.query.format)) || "json";
+    if (!["json", "csv", "xlsx"].includes(format)) {
+      return res.status(400).json({ success: false, message: "format must be json, csv, or xlsx." });
+    }
+
+    const payroll = await buildPayrollPeriodRows({
+      branchId,
+      startStr,
+      endStr,
+      employmentTypeFilter: emp,
+    });
+
+    const rowsRaw = payroll.rows || [];
+    const userIds = rowsRaw.map((r) => r.user_id);
+    const [users, profs] = await Promise.all([
+      userIds.length
+        ? User.find({ _id: { $in: userIds } })
+            .populate("branch_id", "name")
+            .select("name email phone role idNumber kraPin nssf nhif staffId employment_type branch_id")
+            .lean()
+        : Promise.resolve([]),
+      userIds.length ? StaffProfile.find({ user_id: { $in: userIds } }).lean() : Promise.resolve([]),
+    ]);
+    const userBy = Object.fromEntries(users.map((u) => [u._id.toString(), u]));
+    const profBy = Object.fromEntries(profs.map((p) => [p.user_id.toString(), p]));
+
+    const enriched = [];
+    for (const r of rowsRaw) {
+      const uid = r.user_id.toString();
+      const u = userBy[uid];
+      if (!u) continue;
+      if (roleQ && u.role !== roleQ) continue;
+      const p = profBy[uid];
+      const payRate = p?.pay_rate != null ? Number(p.pay_rate) : 0;
+      const days_worked = r.days_present + r.days_late;
+      const total_pay = Math.round(days_worked * payRate * 100) / 100;
+      const joinD = p?.join_date ? new Date(p.join_date).toISOString().slice(0, 10) : "—";
+      enriched.push({
+        user_id: r.user_id,
+        name: u.name,
+        yp_staff_id: p?.staff_id || r.staff_id || "—",
+        email: u.email || "—",
+        phone: u.phone || p?.phone || "—",
+        role: u.role,
+        employment_type: r.employment_type || p?.type || u.employment_type || "—",
+        branch: u.branch_id?.name || r.branch || "—",
+        branch_id: u.branch_id?._id || r.branch_id,
+        join_date: joinD,
+        id_number: u.idNumber || "—",
+        kra_pin: u.kraPin || "—",
+        nssf: u.nssf || "—",
+        nhif: u.nhif || "—",
+        payment_mode: p?.payment_mode || "bank",
+        pay_rate: payRate,
+        days_present: r.days_present,
+        days_late: r.days_late,
+        days_absent: r.days_absent,
+        days_sick: r.sick_days,
+        days_leave: r.leave_days,
+        days_off: r.off_days,
+        days_worked,
+        total_pay,
+        paid_days_note: r.paid_days_note,
+        period_start: startStr,
+        period_end: endStr,
+        total_days_in_period: r.total_days_in_period,
+      });
+    }
+
+    const grandTotal = Math.round(enriched.reduce((s, x) => s + (x.total_pay || 0), 0) * 100) / 100;
+    const payload = {
+      month,
+      period_start: startStr,
+      period_end: endStr,
+      total_days_in_period: payroll.total_days_in_period,
+      row_count: enriched.length,
+      grand_total_pay: grandTotal,
+      summary_totals: payroll.summary_totals,
+      rows: enriched,
+    };
+
+    if (format === "json") {
+      return res.json({ success: true, data: payload });
+    }
+
+    const esc = (v) => {
+      const s = v == null ? "" : String(v);
+      if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+      return s;
+    };
+    const exportCols = [
+      "name",
+      "yp_staff_id",
+      "email",
+      "phone",
+      "role",
+      "employment_type",
+      "branch",
+      "join_date",
+      "id_number",
+      "kra_pin",
+      "nssf",
+      "nhif",
+      "payment_mode",
+      "pay_rate",
+      "days_present",
+      "days_late",
+      "days_absent",
+      "days_sick",
+      "days_leave",
+      "days_off",
+      "days_worked",
+      "total_pay",
+    ];
+    const totalRow = Object.fromEntries(
+      exportCols.map((k) => {
+        if (k === "name") return [k, "TOTALS"];
+        if (k === "total_pay") return [k, grandTotal];
+        return [k, ""];
+      })
+    );
+    const outRows = [
+      ...enriched.map((x) => {
+        const o = {};
+        for (const k of exportCols) o[k] = x[k];
+        return o;
+      }),
+      totalRow,
+    ];
+
+    if (format === "xlsx") {
+      const XLSX = require("xlsx");
+      const sheet = XLSX.utils.json_to_sheet(outRows.length ? outRows : [{ message: "No rows" }]);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, sheet, "Payroll");
+      const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      res.setHeader("Content-Disposition", `attachment; filename="payroll-${month}.xlsx"`);
+      return res.send(buf);
+    }
+
+    const lines = [exportCols.join(",")];
+    for (const row of outRows) {
+      lines.push(exportCols.map((k) => esc(row[k])).join(","));
+    }
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="payroll-${month}.csv"`);
+    return res.send(`\ufeff${lines.join("\r\n")}`);
+  } catch (err) {
+    console.error("[getPayrollMonth]", err);
+    return res.status(500).json({ success: false, message: "Server error." });
+  }
+};
+
 exports.setPayRate = async (req, res) => {
   try {
-    const { rate } = req.body;
-    if (!rate || isNaN(rate) || rate <= 0)
-      return res.status(400).json({ success: false, message: "Rate must be a positive number." });
-    if (rate > 50000)
-      return res.status(400).json({ success: false, message: "Rate exceeds maximum allowed (KES 50,000/day). Flag for review." });
+    const parsed = parsePayRateBody(req.body);
+    if (parsed.error) return res.status(400).json({ success: false, message: parsed.error });
+    const { rate } = parsed;
 
     const profile = await StaffProfile.findOne({ user_id: req.params.id });
     if (!profile) return res.status(404).json({ success: false, message: "Staff profile not found." });
@@ -1673,9 +1918,6 @@ exports.setPayRate = async (req, res) => {
     profile.pay_rate = parseFloat(rate);
     await profile.save();
 
-    // Sync canonical rate to User for payroll exports.
-    await User.updateOne({ _id: req.params.id }, { $set: { pay_rate: parseFloat(rate) } }).catch(() => {});
-
     await writeAudit("SET_PAY_RATE", req, req.params.id, "payroll", { pay_rate: oldRate }, { pay_rate: rate });
 
     await Notification.create({
@@ -1687,23 +1929,6 @@ exports.setPayRate = async (req, res) => {
     res.json({ success: true, message: "Pay rate updated.", data: { old_rate: oldRate, new_rate: rate } });
   } catch (err) {
     res.status(500).json({ success: false, message: "Server error." });
-  }
-};
-
-exports.setPaymentMode = async (req, res) => {
-  try {
-    const mode = String(req.body.payment_mode || "").trim().toLowerCase();
-    if (!["bank", "mpesa", "unknown"].includes(mode)) {
-      return res.status(400).json({ success: false, message: "payment_mode must be bank or mpesa." });
-    }
-    const user = await User.findByIdAndUpdate(req.params.id, { $set: { payment_mode: mode } }, { new: true }).select(
-      "_id payment_mode"
-    );
-    if (!user) return res.status(404).json({ success: false, message: "User not found." });
-    await writeAudit("SET_PAYMENT_MODE", req, req.params.id, "payroll", null, { payment_mode: mode });
-    return res.json({ success: true, message: "Payment mode updated.", data: user });
-  } catch (err) {
-    return res.status(500).json({ success: false, message: "Server error." });
   }
 };
 
@@ -2152,15 +2377,6 @@ exports.updateStaffProfileType = async (req, res) => {
 };
 
 // ─── Attendance (Admin) ───────────────────────────────────────────
-const {
-  buildDailyRows,
-  buildPayrollPeriodRows,
-  globalDailySummary,
-  branchDailySummary,
-  buildMonthlyCalendarSummaries,
-  getWeekRangeFromWeekStartStr,
-} = require("../utils/attendanceAnalytics");
-
 exports.getAllAttendance = async (req, res) => {
   try {
     const {
@@ -2699,161 +2915,6 @@ exports.exportAttendanceCalendar = async (req, res) => {
     return res.send(`\ufeff${lines.join("\r\n")}`);
   } catch (err) {
     console.error("[exportAttendanceCalendar]", err);
-    return res.status(500).json({ success: false, message: "Server error." });
-  }
-};
-
-// ─── Payroll extraction (attendance is source of truth) ───────────
-exports.getMonthlyPayroll = async (req, res) => {
-  try {
-    const monthStr = String(req.query.month || "").trim(); // YYYY-MM
-    const m = monthStr.match(/^(\d{4})-(\d{2})$/);
-    if (!m) return res.status(400).json({ success: false, message: "month must be YYYY-MM." });
-    const year = parseInt(m[1], 10);
-    const month = parseInt(m[2], 10);
-    if (month < 1 || month > 12) return res.status(400).json({ success: false, message: "Invalid month." });
-
-    const branch_id = req.query.branch_id || null;
-    const role = req.query.role || null; // staff|supervisor
-
-    const start = new Date(year, month - 1, 1);
-    const end = new Date(year, month, 0);
-    const startStr = start.toISOString().slice(0, 10);
-    const endStr = end.toISOString().slice(0, 10);
-
-    // Guarantee: 1 record per staff per day in the month (absent/off/leave/unscheduled).
-    await ensureAttendanceCompleteForPeriod({ startStr, endStr, branchId: branch_id || null });
-
-    const workerQuery = {
-      role: { $in: role ? [role] : ["staff", "supervisor"] },
-      is_active: true,
-      status: "approved",
-      ...(branch_id ? { branch_id } : {}),
-    };
-
-    const users = await User.find(workerQuery)
-      .populate("branch_id", "name")
-      .select("name email phone role employment_type branch_id staffId idNumber kraPin nssf nhif payment_mode pay_rate")
-      .sort({ name: 1 })
-      .limit(6000)
-      .lean();
-
-    const staffIds = users.map((u) => u._id);
-    const [profiles, attend] = await Promise.all([
-      StaffProfile.find({ user_id: { $in: staffIds } }).select("user_id staff_id type join_date pay_rate").lean(),
-      Attendance.find({ staff_id: { $in: staffIds }, date: { $gte: startStr, $lte: endStr } })
-        .select("staff_id date status clock_in source")
-        .lean(),
-    ]);
-    const profByUser = Object.fromEntries(profiles.map((p) => [String(p.user_id), p]));
-
-    const COUNTABLE = new Set(["present", "late", "forced", "supervisor_assisted"]);
-    const workedById = new Map();
-    for (const a of attend) {
-      if (!a.clock_in) continue;
-      if (!COUNTABLE.has(a.status)) continue;
-      const id = String(a.staff_id);
-      workedById.set(id, (workedById.get(id) || 0) + 1);
-    }
-
-    const rows = users.map((u) => {
-      const pid = String(u._id);
-      const p = profByUser[pid];
-      const dailyRate = Number(u.pay_rate || 0) > 0 ? Number(u.pay_rate) : Number(p?.pay_rate || 0);
-      const days_worked = workedById.get(pid) || 0;
-      const total_pay = Math.round(days_worked * dailyRate * 100) / 100;
-      return {
-        user_id: u._id,
-        staff_id: p?.staff_id || u.staffId || "—",
-        name: u.name,
-        email: u.email || null,
-        phone: u.phone || null,
-        role: u.role,
-        employment_type: p?.type || u.employment_type || "casual",
-        branch: u.branch_id?.name || "—",
-        branch_id: u.branch_id?._id || null,
-        join_date: p?.join_date || null,
-        id_number: u.idNumber || null,
-        kra_pin: u.kraPin || null,
-        nssf: u.nssf || null,
-        nhif: u.nhif || null,
-        payment_mode: u.payment_mode || "unknown",
-        pay_rate: dailyRate,
-        days_worked,
-        total_pay,
-      };
-    });
-
-    return res.json({ success: true, month: monthStr, start_date: startStr, end_date: endStr, count: rows.length, data: rows });
-  } catch (err) {
-    console.error("[getMonthlyPayroll]", err);
-    return res.status(500).json({ success: false, message: "Server error." });
-  }
-};
-
-exports.exportMonthlyPayroll = async (req, res) => {
-  try {
-    const format = String(req.query.format || "xlsx").toLowerCase() === "csv" ? "csv" : "xlsx";
-    const monthStr = String(req.query.month || "").trim();
-    const m = monthStr.match(/^(\d{4})-(\d{2})$/);
-    if (!m) return res.status(400).json({ success: false, message: "month must be YYYY-MM." });
-
-    // Build rows using the same logic.
-    const fakeRes = {
-      _json: null,
-      status() {
-        return this;
-      },
-      json(payload) {
-        this._json = payload;
-      },
-    };
-    await exports.getMonthlyPayroll(req, fakeRes);
-    const payload = fakeRes._json;
-    if (!payload?.success) return res.status(500).json({ success: false, message: "Failed to generate payroll." });
-    const rows = payload.data || [];
-
-    if (format === "xlsx") {
-      const XLSX = require("xlsx");
-      const sheet = XLSX.utils.json_to_sheet(rows.length ? rows : [{ message: "No rows" }]);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, sheet, "Payroll");
-      const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
-      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-      res.setHeader("Content-Disposition", `attachment; filename="payroll-${monthStr}.xlsx"`);
-      return res.send(buf);
-    }
-
-    const headers = [
-      "staff_id",
-      "name",
-      "email",
-      "phone",
-      "role",
-      "employment_type",
-      "branch",
-      "join_date",
-      "id_number",
-      "kra_pin",
-      "nssf",
-      "nhif",
-      "payment_mode",
-      "pay_rate",
-      "days_worked",
-      "total_pay",
-    ];
-    const esc = (v) => {
-      const s = v == null ? "" : String(v);
-      if (/[\",\\n\\r]/.test(s)) return `\"${s.replace(/\"/g, '\"\"')}\"`;
-      return s;
-    };
-    const lines = [headers.join(",")];
-    for (const r of rows) lines.push(headers.map((h) => esc(r[h])).join(","));
-    res.setHeader("Content-Type", "text/csv; charset=utf-8");
-    res.setHeader("Content-Disposition", `attachment; filename="payroll-${monthStr}.csv"`);
-    return res.send(`\ufeff${lines.join("\r\n")}`);
-  } catch (err) {
-    console.error("[exportMonthlyPayroll]", err);
     return res.status(500).json({ success: false, message: "Server error." });
   }
 };

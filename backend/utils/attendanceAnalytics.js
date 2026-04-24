@@ -543,7 +543,7 @@ const buildPayrollPeriodRows = async ({ branchId, startStr, endStr, employmentTy
   const profiles = await StaffProfile.find({ user_id: { $in: users.map((u) => u._id) } }).lean();
   const profByUser = Object.fromEntries(profiles.map((p) => [p.user_id.toString(), p]));
 
-  if (employmentTypeFilter && ["casual", "reliever", "contract"].includes(employmentTypeFilter)) {
+  if (employmentTypeFilter && ["casual", "reliever", "contract", "supervisor"].includes(employmentTypeFilter)) {
     users = users.filter((u) => (profByUser[u._id.toString()]?.type || "casual") === employmentTypeFilter);
   }
 

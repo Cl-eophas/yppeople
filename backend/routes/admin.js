@@ -176,39 +176,78 @@ router.delete(
   admin.deleteUser
 );
 
-router.patch(
-  "/users/:id/pay-rate",
+const payRateBodyMiddleware = (req, res, next) => {
+  if (req.body?.rate == null && req.body?.pay_rate == null) {
+    return res.status(400).json({ success: false, message: "rate or pay_rate is required." });
+  }
+  return next();
+};
+
+router.get(
+  "/payroll",
   guard,
-  [param("id").isMongoId(), body("rate").isFloat({ gt: 0 })],
+  exportLimiter,
+  [
+    query("month").matches(/^\d{4}-\d{2}$/),
+    query("branch_id").optional().isMongoId(),
+    query("role").optional().isIn(["all", "staff", "supervisor"]),
+    query("employment_type").optional().isIn(["all", "casual", "reliever", "contract", "supervisor"]),
+    query("format").optional().isIn(["json", "csv", "xlsx"]),
+  ],
   validate,
+  admin.getPayrollMonth
+);
+
+router.put(
+  "/users/:id/rate",
+  guard,
+  [
+    param("id").isMongoId(),
+    body("pay_rate").optional().isFloat({ gt: 0, max: 50000 }),
+    body("rate").optional().isFloat({ gt: 0, max: 50000 }),
+  ],
+  validate,
+  payRateBodyMiddleware,
   admin.setPayRate
+);
+
+router.post(
+  "/users/bulk-pay-rate",
+  guard,
+  [
+    body("user_ids").isArray({ min: 1 }),
+    body("user_ids.*").isMongoId(),
+    body("pay_rate").optional().isFloat({ gt: 0, max: 50000 }),
+    body("rate").optional().isFloat({ gt: 0, max: 50000 }),
+  ],
+  validate,
+  payRateBodyMiddleware,
+  admin.bulkSetPayRate
 );
 
 router.patch(
   "/users/:id/payment-mode",
   guard,
-  [param("id").isMongoId(), body("payment_mode").isIn(["bank", "mpesa", "unknown"])],
+  [param("id").isMongoId(), body("payment_mode").isIn(["bank", "mpesa"])],
   validate,
   admin.setPaymentMode
 );
 
-router.get("/sessions", guard, admin.getActiveSessions);
-router.delete("/sessions/:id", guard, [param("id").isMongoId()], validate, admin.revokeUserSessions);
-
-router.get("/payroll", guard, [query("month").matches(/^\d{4}-\d{2}$/), query("branch_id").optional().isMongoId(), query("role").optional().isIn(["staff", "supervisor"])], validate, admin.getMonthlyPayroll);
-router.get(
-  "/payroll/export",
+router.patch(
+  "/users/:id/pay-rate",
   guard,
-  exportLimiter,
   [
-    query("month").matches(/^\d{4}-\d{2}$/),
-    query("format").optional().isIn(["csv", "xlsx"]),
-    query("branch_id").optional().isMongoId(),
-    query("role").optional().isIn(["staff", "supervisor"]),
+    param("id").isMongoId(),
+    body("rate").optional().isFloat({ gt: 0, max: 50000 }),
+    body("pay_rate").optional().isFloat({ gt: 0, max: 50000 }),
   ],
   validate,
-  admin.exportMonthlyPayroll
+  payRateBodyMiddleware,
+  admin.setPayRate
 );
+
+router.get("/sessions", guard, admin.getActiveSessions);
+router.delete("/sessions/:id", guard, [param("id").isMongoId()], validate, admin.revokeUserSessions);
 
 router.get("/geo/search", guard, geoSearchLimiter, [query("q").trim().isLength({ min: 3, max: 200 })], validate, geo.searchPlaces);
 router.get(

@@ -9,6 +9,8 @@ const staffProfileSchema = new mongoose.Schema(
     phone: { type: String, trim: true },
     address: { type: String, trim: true },
     pay_rate: { type: Number, default: 0 },
+    /** bank | mpesa — how net pay is disbursed (admin-managed). */
+    payment_mode: { type: String, enum: ["bank", "mpesa"], default: "bank" },
     rate_history: [
       {
         rate: Number,

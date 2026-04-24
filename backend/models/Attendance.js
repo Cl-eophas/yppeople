@@ -15,14 +15,14 @@ const attendanceSchema = new mongoose.Schema(
     auto_clocked_out: { type: Boolean, default: false },
     status: {
       type: String,
-      enum: ["present", "late", "forced", "supervisor_assisted", "absent", "leave", "off", "unscheduled"],
+      enum: ["present", "late", "forced", "supervisor_assisted", "absent", "leave", "unscheduled"],
       default: "present",
     },
     shift_start: Date,
     late_minutes: { type: Number, default: 0 },
     notes: String,
     /** Who initiated the clock event (stored for audit; supervisor-assisted uses is_supervisor_entry). */
-    source: { type: String, enum: ["self", "supervisor", "supervisor_override"], default: "self" },
+    source: { type: String, enum: ["self", "supervisor", "supervisor_override", "system"], default: "self" },
     coords: {
       lat: Number,
       lng: Number,

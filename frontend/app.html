@@ -695,30 +695,11 @@ nav{flex:1;padding:6px 0;}
     <div class="modal-title">Set Pay Rate</div>
     <div class="modal-sub" id="m-pay-name">—</div>
     <div class="form-group"><label class="form-label">Daily Rate (KES)</label><input class="form-input" id="m-pay-rate" type="number" min="1" max="50000" placeholder="1500"/></div>
+    <div class="form-group"><label class="form-label">Payment mode</label><select class="form-select" id="m-pay-mode"><option value="bank">Bank</option><option value="mpesa">M-Pesa</option></select></div>
     <p style="font-size:12px;color:var(--muted);">Max KES 50,000/day. Changes >3× trigger a security flag.</p>
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="closeModal('m-pay')">Cancel</button>
       <button class="btn btn-primary" onclick="submitPayRate()">Set Rate</button>
-    </div>
-  </div>
-</div>
-
-<!-- Set payment mode -->
-<div id="m-paymode" class="overlay" style="display:none;">
-  <div class="modal">
-    <div class="modal-title">Payment Mode</div>
-    <div class="modal-sub" id="m-paymode-name">—</div>
-    <div class="form-group">
-      <label class="form-label">Mode</label>
-      <select class="form-select" id="m-paymode-sel">
-        <option value="bank">Bank</option>
-        <option value="mpesa">Mpesa</option>
-        <option value="unknown">Unknown</option>
-      </select>
-    </div>
-    <div class="modal-footer">
-      <button class="btn btn-ghost" onclick="closeModal('m-paymode')">Cancel</button>
-      <button class="btn btn-primary" onclick="submitPayMode()">Save</button>
     </div>
   </div>
 </div>
@@ -4552,106 +4533,172 @@ async function loadAdminLeave(){
 async function adminLeaveAction(id,action){try{await api('PATCH',`/admin/leave/${id}/${action}`);loadAdminLeave();}catch(e){alert(e.message);}}
 
 function adminPayrollView(){return `<div id="view-a-payroll" class="view">
-  <div class="page-head">
-    <div><div class="page-title">Payroll Control</div><div class="page-sub">Attendance is source of truth · exports are month-complete</div></div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;">
-      <input class="form-input" type="month" id="a-pay-month" style="width:160px;"/>
-      <select class="form-select" id="a-pay-branch" style="width:180px;"></select>
-      <select class="form-select" id="a-pay-role" style="width:140px;">
-        <option value="">All roles</option>
-        <option value="staff">Staff</option>
-        <option value="supervisor">Supervisor</option>
-      </select>
-      <button type="button" class="btn btn-ghost" onclick="loadAdminPayroll()">↺ Refresh</button>
-      <button type="button" class="btn btn-primary" onclick="downloadPayroll('xlsx')">Download XLSX</button>
-      <button type="button" class="btn btn-ghost" onclick="downloadPayroll('csv')">Download CSV</button>
-    </div>
-  </div>
+  <div class="page-head"><div><div class="page-title">Payroll Control</div><div class="page-sub">Rates, payment mode, and monthly extraction (all approved staff; attendance is the source of truth for days worked)</div></div></div>
   <div class="page-body">
-    <div id="a-payroll-msg"></div>
-    <div class="card"><div id="a-payroll-content"><div class="spinner"></div></div></div>
+    <div class="g2" style="margin-bottom:16px;">
+      <div class="card">
+        <div class="card-head">Staff pay settings</div>
+        <p style="font-size:12px;color:var(--muted);margin:0 0 10px 0;">Set daily rate and bank/M-Pesa. Use monthly report for totals; exports include full HR + payroll columns.</p>
+        <div id="a-payroll-content"><div class="spinner"></div></div>
+      </div>
+      <div class="card">
+        <div class="card-head">Bulk daily rate</div>
+        <p style="font-size:12px;color:var(--muted);margin:0 0 8px 0;">Paste Mongo user IDs (one per line or comma-separated), one rate for all.</p>
+        <div class="form-group"><label class="form-label">User IDs</label><textarea class="form-textarea" id="a-pay-bulk-ids" rows="4" placeholder="64-char hex ObjectIds, separated by space/comma/newline"></textarea></div>
+        <div class="form-group"><label class="form-label">Daily rate (KES)</label><input class="form-input" type="number" id="a-pay-bulk-rate" min="1" max="50000"/></div>
+        <button type="button" class="btn btn-primary" onclick="submitBulkPayRate()">Apply to all</button>
+        <div id="a-pay-bulk-msg" style="margin-top:8px;font-size:12px;"></div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:0;">
+      <div class="card-head">Monthly payroll (JSON + export)</div>
+      <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:10px;">
+        <label style="font-size:12px;color:var(--muted);">Month</label>
+        <input class="form-input" type="month" id="a-payroll-month" style="width:180px;"/>
+        <label style="font-size:12px;color:var(--muted);">Branch</label>
+        <select class="form-select" id="a-payroll-branch" style="min-width:160px;"><option value="">All</option></select>
+        <label style="font-size:12px;color:var(--muted);">Role</label>
+        <select class="form-select" id="a-payroll-role" style="width:120px;">
+          <option value="all">All</option><option value="staff">Staff</option><option value="supervisor">Supervisor</option>
+        </select>
+        <label style="font-size:12px;color:var(--muted);">Type</label>
+        <select class="form-select" id="a-payroll-emp" style="min-width:120px;">
+          <option value="all">All</option>
+          <option value="casual">Casual</option><option value="reliever">Reliever</option><option value="contract">Contract</option><option value="supervisor">Supervisor (profile)</option>
+        </select>
+        <button type="button" class="btn btn-primary" onclick="loadAdminPayrollMonth()">Load report</button>
+        <button type="button" class="btn btn-ghost" onclick="downloadPayrollExport('csv')">CSV</button>
+        <button type="button" class="btn btn-ghost" onclick="downloadPayrollExport('xlsx')">Excel</button>
+      </div>
+      <div id="a-payroll-month-body"><p class="empty" style="margin:0;">Choose a month and load report.</p></div>
+    </div>
   </div>
 </div>`;}
 
 async function loadAdminPayroll(){
-  const box=$('a-payroll-content'); if(!box) return;
+  try{
+    const res=await api('GET','/admin/users?is_active=true&include_profile=true&limit=500');
+    const staff=(res.data||[]).filter(u=>u.role==='staff'||u.role==='supervisor');
+    if($('a-payroll-month')){
+      const t=new Date();
+      const ym=t.getFullYear()+'-'+String(t.getMonth()+1).padStart(2,'0');
+      if(!$('a-payroll-month').value) $('a-payroll-month').value=ym;
+    }
+    if($('a-payroll-branch')&&$('a-payroll-branch').options.length<=1){
+      try{ const br=await api('GET','/admin/branches'); const sel=$('a-payroll-branch');
+        (br.data||[]).forEach(b=>{ const o=document.createElement('option'); o.value=b._id; o.textContent=b.name; sel.appendChild(o); });
+      }catch(e){}
+    }
+    const tbl=staff.length===0?'<p class="empty">No staff.</p>'
+      :`<div style="overflow:auto;max-height:360px;"><table class="tbl"><thead><tr>
+          <th>YP ID</th><th>Name</th><th>Branch</th><th>Mode</th><th>Rate (KES/day)</th><th>Action</th>
+        </tr></thead><tbody>${staff.map(u=>{
+          const pr=u.staff_profile; const rate=pr?.pay_rate!=null?pr.pay_rate:0; const mode=(pr?.payment_mode==='mpesa')?'mpesa':'bank';
+          return `<tr>
+          <td style="font-family:monospace;font-size:11px;font-weight:600;">${escHtml(pr?.staff_id||'—')}</td>
+          <td style="font-weight:700;">${escHtml(u.name||'')}</td>
+          <td style="font-size:12px;">${escHtml(u.branch_id?.name||'—')}</td>
+          <td><select class="form-select" style="min-width:100px;" onchange="adminSetPaymentMode('${u._id}',this.value)">
+            <option value="bank" ${mode==='bank'?'selected':''}>Bank</option>
+            <option value="mpesa" ${mode==='mpesa'?'selected':''}>M-Pesa</option>
+          </select></td>
+          <td style="font-size:13px;font-weight:700;">${rate>0?escHtml(String(rate)):'—'}</td>
+          <td><button type="button" class="btn btn-primary btn-sm" onclick="openPayModal('${u._id}',${JSON.stringify(u.name||'')},${rate},'${mode}')">Set rate</button></td>
+        </tr>`;}).join('')}</tbody></table></div>`;
+    $('a-payroll-content').innerHTML=tbl;
+  }catch(e){$('a-payroll-content').innerHTML=`<p style="color:var(--danger);">${escHtml(e.message||'')}</p>`;}
+}
+
+async function adminSetPaymentMode(uid,mode){
+  try{ await api('PATCH',`/admin/users/${uid}/payment-mode`,{payment_mode:mode}); }catch(e){ alert(e.message); }
+}
+
+function openPayModal(id,name,curRate,mode){
+  PENDING_PAY_ID=id;
+  $('m-pay-name').textContent='Setting pay for: '+(name||'');
+  $('m-pay-rate').value=curRate>0?String(curRate):'';
+  if($('m-pay-mode')) $('m-pay-mode').value=mode==='mpesa'?'mpesa':'bank';
+  openModal('m-pay');
+}
+async function submitPayRate(){
+  try{
+    const v=parseFloat($('m-pay-rate').value);
+    if(!v||v<=0){ alert('Enter a valid daily rate.'); return; }
+    await api('PATCH',`/admin/users/${PENDING_PAY_ID}/pay-rate`,{pay_rate:v});
+    if($('m-pay-mode')) await api('PATCH',`/admin/users/${PENDING_PAY_ID}/payment-mode`,{payment_mode:$('m-pay-mode').value});
+    closeModal('m-pay');
+    loadAdminPayroll();
+    if($('a-payroll-month')?.value) loadAdminPayrollMonth();
+  }catch(e){ alert(e.message); }
+}
+async function submitBulkPayRate(){
+  const el=$('a-pay-bulk-msg'); if(!el) return;
+  const raw=$('a-pay-bulk-ids')?.value||'';
+  const r=parseFloat($('a-pay-bulk-rate')?.value);
+  if(!r||r<=0){ el.textContent='Enter a valid rate.'; el.style.color='var(--danger)'; return; }
+  const ids=raw.split(/[\s,]+/).map(s=>s.trim()).filter(Boolean);
+  if(!ids.length){ el.textContent='Enter at least one user id.'; el.style.color='var(--danger)'; return; }
+  el.textContent='…'; el.style.color='var(--muted)';
+  try{
+    const res=await api('POST','/admin/users/bulk-pay-rate',{user_ids:ids,pay_rate:r});
+    el.textContent=res.message||'Done'; el.style.color='var(--success)';
+    if($('a-pay-bulk-ids')) $('a-pay-bulk-ids').value='';
+    loadAdminPayroll();
+    if($('a-payroll-month')?.value) loadAdminPayrollMonth();
+  }catch(e){ el.textContent=e.message||'Error'; el.style.color='var(--danger)'; }
+}
+async function loadAdminPayrollMonth(){
+  const box=$('a-payroll-month-body'); if(!box) return;
+  const m=$('a-payroll-month')?.value; if(!m){ box.innerHTML='<p class="empty">Select a month.</p>'; return; }
   box.innerHTML='<div class="spinner"></div>';
   try{
-    if(!BRANCHES||!BRANCHES.length){
-      const br=await api('GET','/admin/branches'); BRANCHES=br.data||[];
-    }
-    const bsel=$('a-pay-branch');
-    if(bsel && bsel.options.length<2){
-      bsel.innerHTML = '<option value="">All branches</option>' + (BRANCHES||[]).map(b=>`<option value="${b._id}">${escHtml(b.name)}</option>`).join('');
-    }
-    const m=$('a-pay-month');
-    if(m && !m.value){
-      const n=new Date(); m.value = `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}`;
-    }
-    const month = $('a-pay-month')?.value || '';
-    const branch_id = $('a-pay-branch')?.value || '';
-    const role = $('a-pay-role')?.value || '';
-    const qs=new URLSearchParams(); qs.set('month',month);
-    if(branch_id) qs.set('branch_id',branch_id);
-    if(role) qs.set('role',role);
-    const res=await api('GET',`/admin/payroll?${qs.toString()}`);
-    const rows=res.data||[];
-    if(!rows.length){ box.innerHTML='<p class="empty">No rows.</p>'; return; }
-    const total = rows.reduce((acc,r)=>acc + (Number(r.total_pay)||0),0);
-    $('a-payroll-msg').innerHTML = `<div class="msg msg-info">Rows: <b>${rows.length}</b> · Total pay: <b>${fkes(total)}</b></div>`;
-    box.innerHTML = `<div class="tbl-wrap"><table class="tbl"><thead><tr>
-      <th>YP Staff ID</th><th>Name</th><th>Branch</th><th>Role</th><th>Type</th>
-      <th>Payment</th><th>Rate</th><th>Days Worked</th><th>Total Pay</th><th>Action</th>
-    </tr></thead><tbody>
-      ${rows.map(r=>`<tr>
-        <td style="font-family:monospace;font-size:11px;font-weight:700;">${escHtml(r.staff_id||'—')}</td>
-        <td style="font-weight:700;">${escHtml(r.name||'—')}</td>
-        <td style="font-size:12px;">${escHtml(r.branch||'—')}</td>
+    const p=new URLSearchParams({ month:m, format:'json' });
+    const br=$('a-payroll-branch')?.value; if(br) p.set('branch_id',br);
+    const ro=$('a-payroll-role')?.value; if(ro&&ro!=='all') p.set('role',ro);
+    const em=$('a-payroll-emp')?.value; if(em&&em!=='all') p.set('employment_type',em);
+    const res=await api('GET','/admin/payroll?'+p.toString());
+    const d=res.data; const rows=d.rows||[];
+    const head='<thead><tr><th>Name</th><th>YP ID</th><th>Email</th><th>Phone</th><th>Role</th><th>Type</th><th>Branch</th><th>Join</th><th>ID#</th><th>KRA</th><th>NSSF</th><th>NHIF</th><th>Mode</th><th>Rate</th><th>Days</th><th>Total</th></tr></thead>';
+    const body=rows.length===0?'<tbody><tr><td colspan="16">No rows.</td></tr></tbody>'
+      :`<tbody>${rows.map(r=>`<tr>
+        <td style="font-weight:700;">${escHtml(r.name||'')}</td>
+        <td style="font-family:monospace;font-size:11px;">${escHtml(r.yp_staff_id||'')}</td>
+        <td style="font-size:11px;">${escHtml(r.email||'—')}</td>
+        <td style="font-size:11px;">${escHtml(r.phone||'—')}</td>
         <td>${escHtml(r.role||'—')}</td>
         <td>${escHtml(r.employment_type||'—')}</td>
-        <td>${escHtml((r.payment_mode||'unknown').toUpperCase())}</td>
-        <td style="font-weight:700;color:var(--success);">${fkes(r.pay_rate||0)}</td>
-        <td>${r.days_worked||0}</td>
-        <td style="font-weight:800;">${fkes(r.total_pay||0)}</td>
-        <td style="white-space:nowrap;">
-          <button class="btn btn-primary btn-sm" onclick="openPayModal('${r.user_id}','${escAttr(r.name||'')}')">Set Rate</button>
-          <button class="btn btn-ghost btn-sm" onclick="openPayModeModal('${r.user_id}','${escAttr(r.name||'')}','${escAttr(r.payment_mode||'unknown')}')">Mode</button>
-        </td>
-      </tr>`).join('')}
-    </tbody></table></div>`;
-  }catch(e){
-    box.innerHTML=`<p style="color:var(--danger);">${escHtml(e.message)}</p>`;
-  }
+        <td>${escHtml(r.branch||'—')}</td>
+        <td style="font-size:11px;">${escHtml(r.join_date||'—')}</td>
+        <td style="font-size:11px;">${escHtml(r.id_number||'—')}</td>
+        <td style="font-size:11px;">${escHtml(r.kra_pin||'—')}</td>
+        <td style="font-size:11px;">${escHtml(r.nssf||'—')}</td>
+        <td style="font-size:11px;">${escHtml(r.nhif||'—')}</td>
+        <td>${escHtml(r.payment_mode||'')}</td>
+        <td>${r.pay_rate!=null?escHtml(String(r.pay_rate)):'—'}</td>
+        <td><strong>${r.days_worked!=null?r.days_worked:'—'}</strong></td>
+        <td><strong style="color:var(--success);">${r.total_pay!=null?r.total_pay.toFixed(2):'—'}</strong></td>
+      </tr>`).join('')}</tbody>`;
+    box.innerHTML=`<p style="font-size:12px;margin:0 0 8px 0;">Period <strong>${escHtml(d.period_start||'')}</strong> – <strong>${escHtml(d.period_end||'')}</strong> · <strong>${rows.length}</strong> staff · grand total <strong style="color:var(--success);">${(d.grand_total_pay??0).toFixed(2)}</strong> KES</p>
+    <div style="overflow:auto;max-height:480px;"><table class="tbl">${head}${body}</table></div>`;
+  }catch(e){ box.innerHTML=`<p style="color:var(--danger);">${escHtml(e.message||'')}</p>`; }
 }
-
-function openPayModal(id,name){PENDING_PAY_ID=id;$('m-pay-name').textContent=`Setting rate for: ${name}`;$('m-pay-rate').value='';openModal('m-pay');}
-async function submitPayRate(){
-  try{await api('PATCH',`/admin/users/${PENDING_PAY_ID}/pay-rate`,{rate:parseFloat($('m-pay-rate').value)});closeModal('m-pay');loadAdminPayroll();}catch(e){alert(e.message);}
-}
-
-function openPayModeModal(id,name,mode){
-  PENDING_PAY_ID=id;
-  $('m-paymode-name').textContent=`Payment mode for: ${name}`;
-  $('m-paymode-sel').value = mode || 'unknown';
-  openModal('m-paymode');
-}
-async function submitPayMode(){
+async function downloadPayrollExport(fmt){
+  const m=$('a-payroll-month')?.value; if(!m){ alert('Select a month.'); return; }
+  const p=new URLSearchParams({ month:m, format:fmt });
+  const br=$('a-payroll-branch')?.value; if(br) p.set('branch_id',br);
+  const ro=$('a-payroll-role')?.value; if(ro&&ro!=='all') p.set('role',ro);
+  const em=$('a-payroll-emp')?.value; if(em&&em!=='all') p.set('employment_type',em);
+  const url=`${API}/admin/payroll?`+p.toString();
   try{
-    await api('PATCH',`/admin/users/${PENDING_PAY_ID}/payment-mode`,{payment_mode:$('m-paymode-sel').value});
-    closeModal('m-paymode');
-    loadAdminPayroll();
-  }catch(e){alert(e.message);}
-}
-
-async function downloadPayroll(fmt){
-  try{
-    const month = $('a-pay-month')?.value || '';
-    if(!month){ alert('Pick a month'); return; }
-    const qs=new URLSearchParams(); qs.set('month',month); qs.set('format',fmt);
-    const branch_id=$('a-pay-branch')?.value||''; const role=$('a-pay-role')?.value||'';
-    if(branch_id) qs.set('branch_id',branch_id);
-    if(role) qs.set('role',role);
-    window.open(`${API}/admin/payroll/export?${qs.toString()}`, '_blank');
+    const r=await fetch(url,{headers:{Authorization:`Bearer ${TOKEN}`},credentials:'include'});
+    const ct=r.headers.get('Content-Type')||'';
+    if(ct.includes('application/json')){ const j=await r.json(); throw new Error(j.message||'Export failed'); }
+    const blob=await r.blob();
+    const dispo=r.headers.get('Content-Disposition')||'';
+    const fnMatch=dispo.match(/filename="?([^";]+)"?/);
+    const ext=fmt==='xlsx'?'xlsx':'csv';
+    const fn=fnMatch?fnMatch[1]:'payroll-'+m+'.'+ext;
+    const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=fn; a.click(); URL.revokeObjectURL(a.href);
   }catch(e){ alert(e.message); }
 }
 
