@@ -1952,16 +1952,11 @@ exports.getBranchMonitor = async (req, res) => {
     if (!branch) return res.status(404).json({ success: false, message: "Branch not found." });
 
     const today = new Date().toISOString().slice(0, 10);
-    const [activeStaff, activeSupervisors, todayAttendance, upcomingShifts, recentAudit] = await Promise.all([
+    const [activeStaff, activeSupervisors, todayAttendance, recentAudit] = await Promise.all([
       User.countDocuments({ branch_id: branch._id, role: "staff", is_active: true }),
       User.countDocuments({ branch_id: branch._id, role: "supervisor", is_active: true }),
       Attendance.find({ date: today })
         .populate("staff_id", "branch_id")
-        .lean(),
-      Shift.find({ branch_id: branch._id, shift_date: { $gte: today } })
-        .sort({ shift_date: 1, start_time: 1 })
-        .limit(25)
-        .populate("staff_id", "name role")
         .lean(),
       AuditLog.find({ module: "branches", target_id: branch._id })
         .sort({ timestamp: -1 })
@@ -1985,7 +1980,6 @@ exports.getBranchMonitor = async (req, res) => {
         branch,
         workforce: { active_staff: activeStaff, active_supervisors: activeSupervisors },
         today: { date: today, attendance_total: branchToday.length, attendance_by_status: byStatus },
-        upcoming_shifts: upcomingShifts,
         recent_activity: recentAudit,
       },
     });

@@ -29,6 +29,18 @@ router.get(
 
 router.get("/branches", guard, gs.listBranches);
 
+router.get(
+  "/timetable/monitor",
+  guard,
+  [
+    query("week_start").optional().matches(/^\d{4}-\d{2}-\d{2}$/),
+    query("branch_id").optional().isMongoId(),
+    query("q").optional().trim().isLength({ max: 120 }),
+  ],
+  validate,
+  gs.timetableMonitor
+);
+
 router.get("/meetings", guard, gs.listMeetings);
 router.post(
   "/meetings",

@@ -5,6 +5,10 @@ const Meeting = require("../models/Meeting");
 const UniformAllocation = require("../models/UniformAllocation");
 const Notification = require("../models/Notification");
 const AuditLog = require("../models/AuditLog");
+const StaffWeeklySchedule = require("../models/StaffWeeklySchedule");
+const BranchShiftTemplate = require("../models/BranchShiftTemplate");
+const StaffProfile = require("../models/StaffProfile");
+const tt = require("../services/timetableService");
 const { sendMail } = require("../utils/mailer");
 
 const getIP = (req) => req.ip || req.headers["x-forwarded-for"]?.split(",")[0] || "unknown";
@@ -223,6 +227,95 @@ exports.uniformHistory = async (_req, res) => {
     return res.json({ success: true, data: rows, count: rows.length });
   } catch (err) {
     console.error("[uniformHistory.gs]", err);
+    return res.status(500).json({ success: false, message: "Server error." });
+  }
+};
+
+// ─── Global timetable monitor (read-only) ─────────────────────────
+exports.timetableMonitor = async (req, res) => {
+  try {
+    let week_start = req.query.week_start || tt.mondayOfWeekFromAnyDate(new Date().toISOString().slice(0, 10));
+    week_start = tt.mondayOfWeekFromAnyDate(week_start);
+    if (!week_start) return res.status(400).json({ success: false, message: "Invalid week_start." });
+
+    const branch_id = req.query.branch_id || null;
+    const q = String(req.query.q || "").trim();
+
+    let staffIds = null;
+    if (q) {
+      const rx = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+      const users = await User.find({
+        is_active: true,
+        status: "approved",
+        role: { $in: ["staff", "supervisor"] },
+        $or: [{ name: rx }, { email: rx }, { staffId: rx }],
+      })
+        .select("_id")
+        .limit(2000)
+        .lean();
+      staffIds = users.map((u) => u._id);
+      if (!staffIds.length) return res.json({ success: true, week_start, data: [], count: 0, templatesByBranch: {} });
+    }
+
+    const schedQuery = { week_start };
+    if (branch_id) schedQuery.branch_id = branch_id;
+    if (staffIds) schedQuery.staff_id = { $in: staffIds };
+
+    const schedules = await StaffWeeklySchedule.find(schedQuery).lean();
+    if (!schedules.length) return res.json({ success: true, week_start, data: [], count: 0, templatesByBranch: {} });
+
+    const sids = [...new Set(schedules.map((s) => String(s.staff_id)))];
+    const bids = [...new Set(schedules.map((s) => String(s.branch_id)).filter(Boolean))];
+
+    const [users, branches, profiles, templates] = await Promise.all([
+      User.find({ _id: { $in: sids } }).select("_id name email staffId branch_id role").lean(),
+      Branch.find({ _id: { $in: bids } }).select("_id name").lean(),
+      StaffProfile.find({ user_id: { $in: sids } }).select("user_id type").lean(),
+      BranchShiftTemplate.find({ branch_id: { $in: bids }, is_active: true }).select("_id branch_id label name start_time end_time").lean(),
+    ]);
+
+    const umap = Object.fromEntries(users.map((u) => [String(u._id), u]));
+    const bmap = Object.fromEntries(branches.map((b) => [String(b._id), b]));
+    const pmap = Object.fromEntries(profiles.map((p) => [String(p.user_id), p]));
+
+    const templatesByBranch = {};
+    for (const t of templates) {
+      const bid = String(t.branch_id);
+      if (!templatesByBranch[bid]) templatesByBranch[bid] = [];
+      templatesByBranch[bid].push(t);
+    }
+    for (const bid of Object.keys(templatesByBranch)) {
+      templatesByBranch[bid].sort((a, b) => String(a.label).localeCompare(String(b.label)));
+    }
+
+    const data = schedules
+      .map((s) => {
+        const u = umap[String(s.staff_id)];
+        const b = bmap[String(s.branch_id)];
+        const prof = pmap[String(s.staff_id)];
+        return {
+          staff_id: s.staff_id,
+          branch_id: s.branch_id,
+          week_start: s.week_start,
+          schedule: s.schedule,
+          staff: u
+            ? {
+                id: u._id,
+                name: u.name,
+                email: u.email || null,
+                staffId: u.staffId || null,
+                role: u.role,
+                employment_type: prof?.type || (u.role === "supervisor" ? "supervisor" : "casual"),
+              }
+            : null,
+          branch: b ? { id: b._id, name: b.name } : null,
+        };
+      })
+      .sort((a, b) => String(a.branch?.name || "").localeCompare(String(b.branch?.name || "")) || String(a.staff?.name || "").localeCompare(String(b.staff?.name || "")));
+
+    return res.json({ success: true, week_start, data, count: data.length, templatesByBranch });
+  } catch (err) {
+    console.error("[gs timetableMonitor]", err);
     return res.status(500).json({ success: false, message: "Server error." });
   }
 };

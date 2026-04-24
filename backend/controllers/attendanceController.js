@@ -7,7 +7,7 @@ const { requiresFixedBranch } = require("../utils/branchEmployment");
 const { getTodayString } = require("../utils/dateHelpers");
 const { emitAttendanceChanged } = require("../realtime");
 const { shiftStartDateTime } = require("../utils/shiftTime");
-const shiftService = require("../services/shiftService");
+const scheduleService = require("../services/scheduleService");
 const Notification = require("../models/Notification");
 const SecurityEvent = require("../models/SecurityEvent");
 const ForceClockRequest = require("../models/ForceClockRequest");
@@ -266,7 +266,7 @@ exports.clockIn = async (req, res) => {
     }
 
     const now = new Date();
-    const scheduled = await shiftService.getClockWindowForToday(staffId, today);
+    const scheduled = await scheduleService.getClockWindowForToday(staffId, today);
 
     let shiftStart;
     let status;

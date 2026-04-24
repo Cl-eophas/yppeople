@@ -1395,22 +1395,10 @@ async function loadStaffDash() {
     if(d.today.clocked_in && !d.today.clocked_out) setClockUI('in');
     else if(d.today.clocked_out) setClockUI('done');
 
-    const td = new Date().toISOString().slice(0, 10);
-    try {
-      const sh = await api('GET', `/shift/my?from=${td}&to=${td}`);
-      const hint = $('shift-today-hint');
-      if (hint) {
-        if (sh.data?.length) {
-          const x = sh.data[0];
-          const win = (ME && ME.branch_id && (ME.branch_id.clock_in_window_minutes !== undefined))
-            ? Number(ME.branch_id.clock_in_window_minutes)
-            : 60;
-          hint.textContent = `Today's shift: ${x.start_time} – ${x.end_time}. Clock-in allowed from ${x.start_time} for ${win} minute(s).`;
-        } else {
-          hint.textContent = 'No shift scheduled today — clock-in requires a scheduled shift.';
-        }
-      }
-    } catch (_) { /* non-fatal */ }
+    const hint = $('shift-today-hint');
+    if (hint) {
+      hint.textContent = 'Clock-in is independent. The timetable is used for attendance evaluation (late/absent), not to block clock-in.';
+    }
 
     try { await refreshClockGeo(); } catch (_) {}
   } catch(e) { $('s-stats').innerHTML=`<p style="color:var(--danger);">${e.message}</p>`; }
@@ -1519,8 +1507,8 @@ async function loadAttHistory() {
 function staffShiftsView() {
   return `<div id="view-s-shifts" class="view">
     <div class="page-head">
-      <div><div class="page-title">My Shifts</div><div class="page-sub">Saved weekly timetable (read-only) and materialized shift rows</div></div>
-      <button type="button" class="btn btn-ghost" onclick="loadStaffShiftsFull()">↺ Refresh</button>
+      <div><div class="page-title">My Shifts</div><div class="page-sub">Saved weekly timetable (read-only)</div></div>
+      <button type="button" class="btn btn-ghost" onclick="loadStaffTimetableReadonly()">↺ Refresh</button>
     </div>
     <div class="page-body">
       <div class="card" style="margin-bottom:14px;">
@@ -1533,7 +1521,6 @@ function staffShiftsView() {
         </div>
         <div id="staff-tt-grid"><div class="spinner"></div></div>
       </div>
-      <div class="card"><div class="card-head">Shift records (roster)</div><div id="s-shifts-body"><div class="spinner"></div></div></div>
     </div>
   </div>`;
 }
@@ -1598,35 +1585,7 @@ function staffTtNavWeek(delta) {
   STAFF_TT_WEEK = isoMondayLocal(cur.toISOString().slice(0, 10));
   loadStaffTimetableReadonly();
 }
-async function loadStaffShiftsFull() {
-  await loadStaffTimetableReadonly();
-  await loadStaffShifts();
-}
-async function loadStaffShifts() {
-  const el = $('s-shifts-body');
-  if (!el) return;
-  try {
-    const from = new Date();
-    from.setDate(from.getDate() - 7);
-    const to = new Date();
-    to.setDate(to.getDate() + 42);
-    const fromS = from.toISOString().slice(0, 10);
-    const toS = to.toISOString().slice(0, 10);
-    const res = await api('GET', `/shift/my?from=${fromS}&to=${toS}`);
-    if (!res.data.length) {
-      el.innerHTML = '<p class="empty">No shifts in this range.</p>';
-      return;
-    }
-    el.innerHTML = `<table class="tbl"><thead><tr><th>Date</th><th>Start</th><th>End</th><th>Branch</th></tr></thead><tbody>${res.data.map((r) => `<tr>
-      <td>${r.shift_date}</td>
-      <td>${r.start_time}</td>
-      <td>${r.end_time}${r.end_next_day ? ' <span class="tag">+1</span>' : ''}</td>
-      <td style="font-size:12px;">${r.branch_id?.name || '—'}</td>
-    </tr>`).join('')}</tbody></table>`;
-  } catch (e) {
-    el.innerHTML = `<p style="color:var(--danger);">${e.message}</p>`;
-  }
-}
+// Shift module removed. Staff view shows weekly timetable only.
 
 // ─ Staff: Leave ───────────────────────────────────────────────────
 function staffLeaveView() {
@@ -1954,7 +1913,6 @@ function buildSupervisorShell() {
     {view:'sv-staff',  icon:'👥',label:'Branch Staff'},
     {view:'sv-leave',  icon:'📋',label:'Leave Requests'},
     {view:'sv-msg',    icon:'📢',label:'Send Message'},
-    {view:'sv-shifts', icon:'📆',label:'Shifts'},
     {view:'sv-tt',   icon:'📅',label:'Timetable'},
     {divider:true,label:'My Account'},
     {view:'s-dash',    icon:'⊞',label:'My Dashboard'},
@@ -1973,7 +1931,6 @@ function buildSupervisorShell() {
     ${svStaffView()}
     ${svLeaveView()}
     ${svMsgView()}
-    ${svShiftsView()}
     ${svTimetableView()}
     ${staffDashView()}
     ${staffClockView()}
@@ -2205,6 +2162,7 @@ function buildGeneralSupervisorShell() {
   buildNav([
     {divider:true,label:'Organization'},
     {view:'gs-att',   icon:'◷',label:'Global Attendance'},
+    {view:'gs-tt',    icon:'📅',label:'Timetable Monitor'},
     {view:'gs-contacts', icon:'☎',label:'Contacts'},
     {view:'gs-meetings', icon:'📅',label:'Meetings'},
     {view:'gs-uniforms', icon:'👕',label:'Uniforms'},
@@ -2215,6 +2173,7 @@ function buildGeneralSupervisorShell() {
 
   $('main-area').innerHTML = `
     ${gsAttendanceView()}
+    ${gsTimetableMonitorView()}
     ${gsContactsView()}
     ${gsMeetingsView()}
     ${gsUniformsView()}
@@ -2226,9 +2185,79 @@ function buildGeneralSupervisorShell() {
   showView('gs-att', first || document.querySelector('.nav-item'));
   loadGsBranches();
   loadGsAttendance();
+  loadGsTimetableMonitor();
   loadGsMeetings();
   loadGsUniformHistory();
   startLiveClock();
+}
+
+function gsTimetableMonitorView() {
+  return `<div id="view-gs-tt" class="view">
+    <div class="page-head">
+      <div><div class="page-title">Workforce Timetable Monitor</div><div class="page-sub">Read-only weekly schedules across all branches</div></div>
+      <button class="btn btn-ghost" onclick="loadGsTimetableMonitor()">↺ Refresh</button>
+    </div>
+    <div class="page-body">
+      <div class="card" style="margin-bottom:16px;">
+        <div class="g3" style="align-items:flex-end;">
+          <div class="form-group"><label class="form-label">Branch</label><select class="form-select" id="gs-tt-branch"></select></div>
+          <div class="form-group"><label class="form-label">Week (any day)</label><input class="form-input" type="date" id="gs-tt-week"/></div>
+          <div class="form-group"><label class="form-label">Search staff</label><input class="form-input" id="gs-tt-q" placeholder="Name, email, staff ID" oninput="clearTimeout(window._gstt);window._gstt=setTimeout(loadGsTimetableMonitor,350)"/></div>
+        </div>
+        <div id="gs-tt-msg"></div>
+      </div>
+      <div class="card"><div id="gs-tt-out"><div class="spinner"></div></div></div>
+    </div>
+  </div>`;
+}
+
+async function loadGsTimetableMonitor() {
+  const out = $('gs-tt-out');
+  if (!out) return;
+  out.innerHTML = '<div class="spinner"></div>';
+  try {
+    const wkEl = $('gs-tt-week');
+    if (wkEl && !wkEl.value) wkEl.value = today();
+    const week_start = $('gs-tt-week')?.value || today();
+    const branch_id = $('gs-tt-branch')?.value || '';
+    const q = $('gs-tt-q')?.value?.trim() || '';
+    const qs = new URLSearchParams();
+    if (week_start) qs.set('week_start', week_start);
+    if (branch_id) qs.set('branch_id', branch_id);
+    if (q) qs.set('q', q);
+    const res = await api('GET', `/general-supervisor/timetable/monitor?${qs.toString()}`);
+
+    const rows = res.data || [];
+    if (!rows.length) {
+      out.innerHTML = '<p class="empty">No saved timetables for this week.</p>';
+      return;
+    }
+    const tmplByBranch = res.templatesByBranch || {};
+    const tmplLookup = (branchId, sid) => {
+      const list = tmplByBranch[String(branchId)] || [];
+      const t = list.find((x) => String(x._id) === String(sid));
+      if (!t) return '—';
+      return `${t.label} · ${t.start_time}–${t.end_time}`;
+    };
+    const DKEYS = ['monday','tuesday','wednesday','thursday','friday','saturday','sunday'];
+    const head = `<tr><th style="min-width:160px;">Staff</th><th style="min-width:140px;">Branch</th><th>Mon</th><th>Tue</th><th>Wed</th><th>Thu</th><th>Fri</th><th>Sat</th><th>Sun</th></tr>`;
+    const body = rows.map((r) => {
+      const sc = r.schedule || {};
+      const cells = DKEYS.map((dk) => {
+        const c = sc[dk] || { is_off:false, shift_id:null };
+        let lab = 'NONE';
+        if (c.is_off) lab = 'OFF';
+        else if (c.shift_id) lab = tmplLookup(r.branch_id, c.shift_id);
+        return `<td style="font-size:11px;">${escHtml(lab)}</td>`;
+      }).join('');
+      const nm = r.staff?.name || '—';
+      const meta = r.staff?.employment_type ? ` <span style="color:var(--muted);font-size:11px;">${escHtml(r.staff.employment_type)}</span>` : '';
+      return `<tr><td style="font-weight:700;">${escHtml(nm)}${meta}</td><td>${escHtml(r.branch?.name || '—')}</td>${cells}</tr>`;
+    }).join('');
+    out.innerHTML = `<div class="tbl-wrap"><table class="tbl"><thead>${head}</thead><tbody>${body}</tbody></table></div>`;
+  } catch (e) {
+    out.innerHTML = `<p style="color:var(--danger);">${escHtml(e.message)}</p>`;
+  }
 }
 
 function gsAttendanceView() {
@@ -2264,6 +2293,7 @@ async function loadGsBranches() {
     const opts = ['<option value="">All branches</option>'].concat(list.map(b=>`<option value="${b._id}">${b.name}</option>`));
     if ($('gs-att-branch')) $('gs-att-branch').innerHTML = opts.join('');
     if ($('gs-contacts-branch')) $('gs-contacts-branch').innerHTML = opts.join('');
+    if ($('gs-tt-branch')) $('gs-tt-branch').innerHTML = opts.join('');
   } catch (e) {}
 }
 
@@ -2629,119 +2659,7 @@ async function svIndivMsg() {
   try{const r=await api('POST','/supervisor/notify',{staff_id:id,message:msg});flash('indiv-msg-sv',r.message,'success');$('sv-indiv-msg').value='';}catch(e){flash('indiv-msg-sv',e.message);}
 }
 
-function svShiftsView() {
-  const n = new Date();
-  return `<div id="view-sv-shifts" class="view">
-    <div class="page-head">
-      <div><div class="page-title">Branch Shifts</div><div class="page-sub">Assign and review shifts for your branch only</div></div>
-      <button type="button" class="btn btn-ghost" onclick="loadSvShifts()">↺ Refresh</button>
-    </div>
-    <div class="page-body">
-      <div class="g2">
-        <div class="card">
-          <div class="card-head">Assign shift</div>
-          <div id="sv-shift-assign-msg"></div>
-          <div class="form-group"><label class="form-label">Staff</label><select class="form-select" id="sv-as-staff"></select></div>
-          <div class="form-group"><label class="form-label">Date</label><input class="form-input" type="date" id="sv-as-date" value="${n.toISOString().slice(0,10)}"/></div>
-          <div class="form-group"><label class="form-label">Start time</label><input class="form-input" id="sv-as-start" value="08:00" placeholder="08:00"/></div>
-          <button type="button" class="btn btn-role" onclick="submitSvShiftAssign()">Assign</button>
-        </div>
-        <div class="card">
-          <div class="card-head">Bulk assign (same branch)</div>
-          <div id="sv-shift-bulk-msg"></div>
-          <div class="form-group"><label class="form-label">Staff (multi-select)</label><select class="form-select" id="sv-as-bulk" multiple size="8" style="min-height:160px;"></select></div>
-          <div class="form-group"><label class="form-label">Date</label><input class="form-input" type="date" id="sv-as-bulk-date" value="${n.toISOString().slice(0,10)}"/></div>
-          <div class="form-group"><label class="form-label">Start time</label><input class="form-input" id="sv-as-bulk-start" value="08:00"/></div>
-          <button type="button" class="btn btn-primary" onclick="submitSvShiftBulk()">Bulk assign</button>
-        </div>
-      </div>
-      <div class="card" style="margin-top:16px;">
-        <div class="card-head">Upcoming shifts</div>
-        <div id="sv-shifts-table"><div class="spinner"></div></div>
-      </div>
-    </div>
-  </div>`;
-}
-
-function fillSvShiftStaffSelects() {
-  const opts = STAFF_LIST.map((s) => `<option value="${s._id}">${escHtml(s.name)}</option>`).join('');
-  const one = $('sv-as-staff');
-  const mul = $('sv-as-bulk');
-  if (one) one.innerHTML = `<option value="">Select…</option>${opts}`;
-  if (mul) mul.innerHTML = opts;
-}
-
-async function loadSvShifts() {
-  const box = $('sv-shifts-table');
-  if (!box) return;
-  fillSvShiftStaffSelects();
-  try {
-    const from = new Date();
-    const to = new Date();
-    to.setDate(to.getDate() + 21);
-    const res = await api(
-      'GET',
-      `/shift/branch?from=${from.toISOString().slice(0, 10)}&to=${to.toISOString().slice(0, 10)}`
-    );
-    if (!res.data.length) {
-      box.innerHTML = '<p class="empty">No shifts in range.</p>';
-      return;
-    }
-    box.innerHTML = `<table class="tbl"><thead><tr><th>Date</th><th>Staff</th><th>Start</th><th>End</th></tr></thead><tbody>${res.data
-      .map(
-        (r) => `<tr>
-      <td>${r.shift_date}</td>
-      <td>${escHtml(r.staff_id?.name || '—')}</td>
-      <td>${r.start_time}</td>
-      <td>${r.end_time}</td>
-    </tr>`
-      )
-      .join('')}</tbody></table>`;
-  } catch (e) {
-    box.innerHTML = `<p style="color:var(--danger);">${e.message}</p>`;
-  }
-}
-
-async function submitSvShiftAssign() {
-  const staff_id = $('sv-as-staff').value;
-  const shift_date = $('sv-as-date').value;
-  const start_time = ($('sv-as-start').value || '').trim();
-  if (!staff_id || !shift_date || !start_time) {
-    flash('sv-shift-assign-msg', 'Fill all fields.');
-    return;
-  }
-  const u = STAFF_LIST.find((x) => x._id === staff_id);
-  const branch_id = u?.branch_id?._id || u?.branch_id;
-  if (!branch_id) {
-    flash('sv-shift-assign-msg', 'Could not resolve branch.');
-    return;
-  }
-  try {
-    await api('POST', '/shift/assign', { staff_id, branch_id, shift_date, start_time });
-    flash('sv-shift-assign-msg', 'Shift assigned.', 'success');
-    loadSvShifts();
-  } catch (e) {
-    flash('sv-shift-assign-msg', e.message);
-  }
-}
-
-async function submitSvShiftBulk() {
-  const sel = $('sv-as-bulk');
-  const shift_date = $('sv-as-bulk-date').value;
-  const start_time = ($('sv-as-bulk-start').value || '').trim();
-  const staff_ids = sel ? Array.from(sel.selectedOptions).map((o) => o.value).filter(Boolean) : [];
-  if (staff_ids.length < 1 || !shift_date || !start_time) {
-    flash('sv-shift-bulk-msg', 'Select at least one staff member and fill date/time.');
-    return;
-  }
-  try {
-    const r = await api('POST', '/shift/bulk-assign', { staff_ids, shift_date, start_time });
-    flash('sv-shift-bulk-msg', r.message, 'success');
-    loadSvShifts();
-  } catch (e) {
-    flash('sv-shift-bulk-msg', e.message);
-  }
-}
+// Shift module removed. Scheduling is controlled via timetable only.
 
 async function doManualIn() {
   const id=$('m-staff-sel').value, reason=$('m-reason').value.trim();
@@ -2780,7 +2698,6 @@ function buildAdminShell() {
     {view:'a-create',  icon:'➕',label:'Create User'},
     {divider:true,label:'Operations'},
     {view:'a-branches',icon:'🏢',label:'Branches'},
-    {view:'a-shifts',  icon:'📆',label:'Shifts'},
     {view:'a-tt',      icon:'📅',label:'Timetables'},
     {view:'a-att',     icon:'◷',label:'Attendance'},
     {view:'a-leave',   icon:'📅',label:'Leave'},
@@ -2804,7 +2721,6 @@ function buildAdminShell() {
     ${adminUsersView()}
     ${adminCreateUserView()}
     ${adminBranchesView()}
-    ${adminShiftsView()}
     ${adminTimetableView()}
     ${adminAttView()}
     ${adminLeaveView()}
@@ -3021,44 +2937,7 @@ async function loadAdminReportsPage(){
   loadRepSnaps();
 }
 
-function adminShiftsView(){return `<div id="view-a-shifts" class="view">
-  <div class="page-head">
-    <div><div class="page-title">Shift management</div><div class="page-sub">9-hour shifts · branch-scoped for supervisors</div></div>
-    <button type="button" class="btn btn-ghost" onclick="loadAdminShifts()">↺ Refresh</button>
-  </div>
-  <div class="page-body">
-    <div class="g2">
-      <div class="card">
-        <div class="card-head">Assign one</div>
-        <div id="asg-msg"></div>
-        <div class="form-group"><label class="form-label">Branch</label><select class="form-select" id="as-br" onchange="fillAdminShiftStaffSelects()"></select></div>
-        <div class="form-group"><label class="form-label">Staff</label><select class="form-select" id="as-staff"></select></div>
-        <div class="form-group"><label class="form-label">Date</label><input class="form-input" type="date" id="as-date"/></div>
-        <div class="form-group"><label class="form-label">Start time</label><input class="form-input" id="as-start" value="08:00"/></div>
-        <button type="button" class="btn btn-role" onclick="submitAdminShiftAssign()">Assign shift</button>
-      </div>
-      <div class="card">
-        <div class="card-head">Bulk assign</div>
-        <div id="asg-bulk-msg"></div>
-        <div class="form-group"><label class="form-label">Branch</label><select class="form-select" id="as-bulk-br" onchange="fillAdminShiftBulkSelect()"></select></div>
-        <div class="form-group"><label class="form-label">Staff (hold Ctrl/Cmd)</label><select class="form-select" id="as-bulk-staff" multiple size="10" style="min-height:200px;"></select></div>
-        <div class="form-group"><label class="form-label">Date</label><input class="form-input" type="date" id="as-bulk-date"/></div>
-        <div class="form-group"><label class="form-label">Start time</label><input class="form-input" id="as-bulk-start" value="08:00"/></div>
-        <button type="button" class="btn btn-primary" onclick="submitAdminShiftBulk()">Bulk assign</button>
-      </div>
-    </div>
-    <div class="card" style="margin-top:16px;">
-      <div class="card-head">Schedule</div>
-      <div class="g2" style="align-items:flex-end;">
-        <div class="form-group"><label class="form-label">Branch</label><select class="form-select" id="as-list-br" onchange="refreshAdminShiftTable()"></select></div>
-        <div class="form-group"><label class="form-label">From</label><input class="form-input" type="date" id="as-list-from" onchange="refreshAdminShiftTable()"/></div>
-        <div class="form-group"><label class="form-label">To</label><input class="form-input" type="date" id="as-list-to" onchange="refreshAdminShiftTable()"/></div>
-        <div class="form-group"><label class="form-label">Search</label><input class="form-input" id="as-list-q" placeholder="YP Staff ID or name" oninput="clearTimeout(window._asq);window._asq=setTimeout(refreshAdminShiftTable,350)"/></div>
-      </div>
-      <div id="as-list"><div class="spinner"></div></div>
-    </div>
-  </div>
-</div>`;}
+// Shift module removed. Admin has timetable read-only visibility only.
 
 function adminTimetableView() {
   return `<div id="view-a-tt" class="view">
@@ -3143,121 +3022,7 @@ async function loadAdminTimetable() {
   }
 }
 
-async function ensureShiftUserCache(){
-  if(window._shiftUsersCache) return;
-  const r=await api('GET','/admin/users?is_active=true&include_profile=true');
-  window._shiftUsersCache=r.data;
-}
-
-function fillAdminShiftStaffSelects(){
-  const br=$('as-br')?.value;
-  const sel=$('as-staff');
-  if(!sel||!window._shiftUsersCache) return;
-  const rows=window._shiftUsersCache.filter(u=>u.branch_id&&String(u.branch_id._id||u.branch_id)===String(br)&&['staff','supervisor'].includes(u.role));
-  sel.innerHTML=rows.map(u=>{
-    const yp=u.staff_profile?.staff_id;
-    const lab=yp?`${u.name} · ${yp}`:u.name;
-    return `<option value="${u._id}">${escHtml(lab)} (${u.role})</option>`;
-  }).join('');
-}
-
-function fillAdminShiftBulkSelect(){
-  const br=$('as-bulk-br')?.value;
-  const sel=$('as-bulk-staff');
-  if(!sel||!window._shiftUsersCache) return;
-  const rows=window._shiftUsersCache.filter(u=>u.branch_id&&String(u.branch_id._id||u.branch_id)===String(br)&&['staff','supervisor'].includes(u.role));
-  sel.innerHTML=rows.map(u=>{
-    const yp=u.staff_profile?.staff_id;
-    const lab=yp?`${u.name} · ${yp}`:u.name;
-    return `<option value="${u._id}">${escHtml(lab)}</option>`;
-  }).join('');
-}
-
-async function loadAdminShifts(){
-  try{
-    if(!BRANCHES||!BRANCHES.length){
-      const br=await api('GET','/admin/branches');
-      BRANCHES=br.data||[];
-    }
-    delete window._shiftUsersCache;
-    await ensureShiftUserCache();
-    const n=new Date();
-    const from=new Date(n);from.setDate(from.getDate()-3);
-    const to=new Date(n);to.setDate(to.getDate()+28);
-    const brSel=$('as-br'),bulkBr=$('as-bulk-br'),listBr=$('as-list-br');
-    const opts=(BRANCHES||[]).map(b=>`<option value="${b._id}">${escHtml(b.name)}</option>`).join('');
-    if(brSel){brSel.innerHTML=opts;if(!brSel.value&&BRANCHES[0]) brSel.value=BRANCHES[0]._id;}
-    if(bulkBr){bulkBr.innerHTML=opts;if(!bulkBr.value&&BRANCHES[0]) bulkBr.value=BRANCHES[0]._id;}
-    if(listBr){listBr.innerHTML=opts;if(!listBr.value&&BRANCHES[0]) listBr.value=BRANCHES[0]._id;}
-    fillAdminShiftStaffSelects();
-    fillAdminShiftBulkSelect();
-    const df=$('as-date'),dbf=$('as-bulk-date');
-    if(df&&!df.value) df.value=n.toISOString().slice(0,10);
-    if(dbf&&!dbf.value) dbf.value=n.toISOString().slice(0,10);
-    const lf=$('as-list-from'),lt=$('as-list-to');
-    if(lf&&!lf.value) lf.value=from.toISOString().slice(0,10);
-    if(lt&&!lt.value) lt.value=to.toISOString().slice(0,10);
-    await refreshAdminShiftTable();
-  }catch(e){
-    const box=$('as-list');if(box) box.innerHTML=`<p style="color:var(--danger);">${e.message}</p>`;
-  }
-}
-
-async function refreshAdminShiftTable(){
-  const bid=$('as-list-br')?.value;
-  const from=$('as-list-from')?.value;
-  const to=$('as-list-to')?.value;
-  const box=$('as-list');
-  if(!bid||!from||!to||!box) return;
-  try{
-    const sq=$('as-list-q')?.value?.trim();
-    let url=`/shift/branch?branch_id=${encodeURIComponent(bid)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
-    if(sq) url += '&search='+encodeURIComponent(sq);
-    const res=await api('GET',url);
-    if(!res.data.length){box.innerHTML='<p class="empty">No shifts in range.</p>';return;}
-    const profById=Object.fromEntries((window._shiftUsersCache||[]).map(u=>[String(u._id),u.staff_profile?.staff_id||'']));
-    box.innerHTML=`<table class="tbl"><thead><tr><th>Date</th><th>YP ID</th><th>Staff</th><th>Start</th><th>End</th><th>Action</th></tr></thead><tbody>${res.data.map(r=>{const sid=r.staff_id&&r.staff_id._id?String(r.staff_id._id):'';const yp=sid?profById[sid]:'';return `<tr>
-      <td>${r.shift_date}</td>
-      <td style="font-family:monospace;font-size:11px;">${escHtml(yp||'—')}</td>
-      <td>${escHtml(r.staff_id?.name||'—')}</td>
-      <td>${r.start_time}</td>
-      <td>${r.end_time}</td>
-      <td><button type="button" class="btn btn-danger btn-sm" onclick="deleteAdminShift('${r._id}')">Delete</button></td>
-    </tr>`;}).join('')}</tbody></table>`;
-  }catch(e){box.innerHTML=`<p style="color:var(--danger);">${e.message}</p>`;}
-}
-
-async function deleteAdminShift(id){
-  if(!confirm('Remove this shift?')) return;
-  try{await api('DELETE',`/shift/${id}`);refreshAdminShiftTable();}catch(e){alert(e.message);}
-}
-
-async function submitAdminShiftAssign(){
-  const staff_id=$('as-staff').value;
-  const branch_id=$('as-br').value;
-  const shift_date=$('as-date').value;
-  const start_time=($('as-start').value||'').trim();
-  if(!staff_id||!branch_id||!shift_date||!start_time){flash('asg-msg','Complete all fields.');return;}
-  try{
-    await api('POST','/shift/assign',{staff_id,branch_id,shift_date,start_time});
-    flash('asg-msg','Assigned.','success');
-    refreshAdminShiftTable();
-  }catch(e){flash('asg-msg',e.message);}
-}
-
-async function submitAdminShiftBulk(){
-  const branch_id=$('as-bulk-br').value;
-  const shift_date=$('as-bulk-date').value;
-  const start_time=($('as-bulk-start').value||'').trim();
-  const sel=$('as-bulk-staff');
-  const staff_ids=sel?Array.from(sel.selectedOptions).map(o=>o.value).filter(Boolean):[];
-  if(staff_ids.length<1||!branch_id||!shift_date||!start_time){flash('asg-bulk-msg','Select staff and fill date/time.');return;}
-  try{
-    const r=await api('POST','/shift/bulk-assign',{staff_ids,shift_date,start_time});
-    flash('asg-bulk-msg',r.message,'success');
-    refreshAdminShiftTable();
-  }catch(e){flash('asg-bulk-msg',e.message);}
-}
+// Shift module removed. Admin scheduling is read-only via Timetable.
 
 function adminAnalyticsView(){return `<div id="view-a-analytics" class="view">
   <div class="page-head">
@@ -4317,12 +4082,12 @@ async function openBranchMonitor(id){
       <div class="card" style="padding:12px;"><div class="stat-lbl">Today attendance</div><div class="stat-val">${t.attendance_total||0}</div><div style="font-size:12px;color:var(--muted);">${Object.keys(by).map(k=>`${escHtml(k)}:${by[k]}`).join(' · ')||'—'}</div></div>
     </div>`;
 
-    const shifts = (m.data.upcoming_shifts||[]).slice(0,10);
-    const shiftsHtml = shifts.length
-      ? `<table class="tbl"><thead><tr><th>Date</th><th>Start</th><th>Staff</th></tr></thead><tbody>`+
-        shifts.map(s=>`<tr><td>${s.shift_date}</td><td>${s.start_time}</td><td>${escHtml(s.staff_id?.name||'—')}</td></tr>`).join('')+
-        `</tbody></table>`
-      : `<p class="empty">No upcoming shifts.</p>`;
+    const shiftsBox = `<div class="card" style="margin-top:10px;">
+      <div class="card-head">Scheduling</div>
+      <div style="padding:0 12px 12px;">
+        <p class="empty">Scheduling is controlled by supervisor timetables. Use the <strong>Timetables</strong> page to view saved schedules.</p>
+      </div>
+    </div>`;
 
     const reportBox = `<div class="card" style="margin-top:10px;">
       <div class="card-head">Branch report</div>
@@ -4347,7 +4112,7 @@ async function openBranchMonitor(id){
       </div>
     </div>`;
 
-    $('mb-body').innerHTML = stats + `<div class="card" style="margin-top:10px;"><div class="card-head">Upcoming shifts</div><div style="padding:0 12px 12px;">${shiftsHtml}</div></div>` + reportBox + transferBox;
+    $('mb-body').innerHTML = stats + shiftsBox + reportBox + transferBox;
 
     // load users for transfer list
     const u=await api('GET',`/admin/users?branch_id=${encodeURIComponent(id)}&is_active=true`);
@@ -4943,9 +4708,15 @@ window.showView = function(name, el) {
   if(name==='sv-att')    loadSvAtt();
   if(name==='sv-leave')  loadSvLeave();
   if(name==='sv-msg')    { loadSvMsgDropdown(); }
-  if(name==='sv-shifts') loadSvShifts();
+  // shift module removed
   if(name==='sv-tt')    loadSvTimetable();
-  if(name==='s-shifts')  loadStaffShiftsFull();
+  if(name==='s-shifts')  loadStaffTimetableReadonly();
+  // General supervisor
+  if(name==='gs-att')    loadGsAttendance();
+  if(name==='gs-tt')     loadGsTimetableMonitor();
+  if(name==='gs-contacts') loadGsContacts();
+  if(name==='gs-meetings') loadGsMeetings();
+  if(name==='gs-uniforms') loadGsUniformHistory();
   // Admin
   if(name==='a-analytics'){ AN_PAGE=1; loadAdminAnalytics(); }
   if(name==='a-reports') loadAdminReportsPage();
@@ -4953,7 +4724,7 @@ window.showView = function(name, el) {
   if(name==='a-audit')   loadAudit();
   if(name==='a-sessions')loadSessions();
   if(name==='a-users')   setAdminUserTab(ADMIN_USER_TAB||'pending');
-  if(name==='a-shifts')  loadAdminShifts();
+  // shift module removed
   if(name==='a-tt')     loadAdminTimetable();
   if(name==='a-branches'){loadBranchesForAdmin();setTimeout(()=>initBranchMapIfNeeded(),120);}
   if(name==='a-att')     {

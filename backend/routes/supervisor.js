@@ -75,12 +75,4 @@ router.post(
 router.get("/attendance", guard, sup.getAttendance);
 router.get("/late", guard, sup.getLateStaff);
 
-router.put(
-  "/shifts/weekly",
-  guard,
-  [body("entries").isArray({ min: 1 })],
-  validate,
-  sup.setWeeklyShifts
-);
-
 module.exports = router;

@@ -611,19 +611,4 @@ exports.getLateStaff = async (req, res) => {
   }
 };
 
-const shiftService = require("../services/shiftService");
-
-exports.setWeeklyShifts = async (req, res) => {
-  try {
-    const { entries } = req.body;
-    if (!Array.isArray(entries) || !entries.length) {
-      return res.status(400).json({ success: false, message: "entries array is required." });
-    }
-    const r = await shiftService.setWeeklyShifts({ actor: req.user, entries });
-    if (!r.ok) return res.status(r.code || 400).json({ success: false, message: r.message || "Failed." });
-    return res.json({ success: true, message: "Weekly shifts saved.", data: r.results });
-  } catch (err) {
-    console.error("[setWeeklyShifts]", err);
-    return res.status(500).json({ success: false, message: "Server error." });
-  }
-};
+// Shift module removed. Weekly scheduling is handled via Timetable module only.

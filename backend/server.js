@@ -72,7 +72,6 @@ app.use("/api/user", require("./routes/profile"));
 app.use("/api/contracts", require("./routes/contracts"));
 app.use("/api/analytics", require("./routes/analytics"));
 app.use("/api/public", require("./routes/public"));
-app.use("/api/shift", require("./routes/shift"));
 app.use("/api/timetable", require("./routes/timetable"));
 app.use("/api/reports", require("./routes/reports"));
 

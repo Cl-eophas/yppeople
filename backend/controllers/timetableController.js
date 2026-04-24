@@ -3,12 +3,35 @@ const BranchShiftTemplate = require("../models/BranchShiftTemplate");
 const StaffWeeklySchedule = require("../models/StaffWeeklySchedule");
 const User = require("../models/User");
 const StaffProfile = require("../models/StaffProfile");
-const shiftService = require("../services/shiftService");
+const AuditLog = require("../models/AuditLog");
 const tt = require("../services/timetableService");
 
 function supBranchId(req) {
   const b = req.user.branch_id || req.user.branch;
   return b ? b.toString() : null;
+}
+
+const getIP = (req) => req.ip || req.headers["x-forwarded-for"]?.split(",")[0] || "unknown";
+const getUA = (req) => req.headers["user-agent"] || "unknown";
+
+async function writeTimetableAudit({ req, branchId, staffId, weekStart, before, after }) {
+  try {
+    await AuditLog.create({
+      action: before ? "TIMETABLE_WEEK_UPDATED" : "TIMETABLE_WEEK_CREATED",
+      admin_id: req.user._id,
+      target_id: staffId,
+      target_type: "timetable",
+      module: "timetable",
+      ip_address: getIP(req),
+      user_agent: getUA(req),
+      before: before || null,
+      after,
+      metadata: { branch_id: branchId, staff_id: staffId, week_start: weekStart },
+      timestamp: new Date(),
+    });
+  } catch (e) {
+    console.error("[timetable audit]", e.message);
+  }
 }
 
 // ─── Supervisor: shift templates ─────────────────────────────────
@@ -205,8 +228,7 @@ exports.saveWeekSupervisor = async (req, res) => {
     const mon = tt.mondayOfWeekFromAnyDate(week_start);
     if (!mon) return res.status(400).json({ success: false, message: "Invalid week_start." });
 
-    const branchOk = shiftService.assertBranchAccess(req.user, bid);
-    if (!branchOk.ok) return res.status(branchOk.code).json({ success: false, message: branchOk.message });
+    // RBAC already enforces supervisor-only; supervisor branch is inferred from their profile (supBranchId).
 
     const errors = [];
     let saved = 0;
@@ -242,6 +264,8 @@ exports.saveWeekSupervisor = async (req, res) => {
       }
       if (!rowOk) continue;
 
+      const existing = await StaffWeeklySchedule.findOne({ staff_id, week_start: mon }).select("schedule").lean();
+
       await tt.upsertWeeklyScheduleDoc({
         staffId: staff_id,
         branchId: bid,
@@ -249,6 +273,11 @@ exports.saveWeekSupervisor = async (req, res) => {
         schedule: norm,
         createdBy: req.user._id,
       });
+
+      const before = existing?.schedule || null;
+      if (JSON.stringify(before || {}) !== JSON.stringify(norm || {})) {
+        await writeTimetableAudit({ req, branchId: bid, staffId: staff_id, weekStart: mon, before, after: norm });
+      }
       saved += 1;
     }
 
